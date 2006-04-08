@@ -6,7 +6,7 @@ package Chroniton::Messages;
 use strict;
 use warnings;
 use Chroniton::Message;
-use YAML qw(DumpFile);
+use YAML qw(DumpFile Dump);
 use Lingua::EN::Inflect qw(NO);
 use Number::Bytes::Human qw(format_bytes);
 use File::HomeDir;
@@ -47,6 +47,7 @@ sub new {
 		 warning => [],
 		 message => [],
 		 event => [],
+		 files => [], # files has an s... "file" didn't make sense
 		 internal => { 
 			      print => $print,
 			      count => 0,
@@ -171,6 +172,7 @@ sub summary {
     my $errors = $self->retrieve("error");
     my $warnings = $self->retrieve("warning");
     my @events = $self->retrieve("event");
+    my $file  = $self->retrieve("files");
     my ($dir, $copy, $link, $delete, $unknown) = (0, 0, 0, 0, 0);
     my ($bytes, $ctime) = (0, 1e-30);
     foreach my $event (@events){
@@ -184,15 +186,16 @@ sub summary {
 	$link++    if $id == 11;
 	$delete++  if $id == 12;
 	$dir++     if $id == 13;
-	$unknown++ if $id < 10 || $id > 13;
+	$unknown++ if $event != 0 && ($id < 10 || $id > 13);
     }
 
     my $result = NO("error", $errors). ", ". NO("warning", $warnings). ".\n";
-    $result .= NO("  file", $copy). " copied.\n";
-    $result .= NO("  directory", $dir). " created.\n";
-    $result .= NO("  link", $link). " created.\n";
-    $result .= NO("  stale file", $delete). " deleted.\n";
-    $result .= NO("  unknown event", $unknown). ".\n";
+    $result .=   NO("  file", $copy). " copied.\n";
+    $result .=   NO("  directory", $dir). " created.\n";
+    $result .=   NO("  link", $link). " created.\n";
+    $result .=   NO("  stale file", $delete). " deleted.\n";
+    $result .=   NO("  unknown event", $unknown). ".\n";
+    $result .=   NO("  file", $file). " in backup set.\n";
 
     if($copy > 0){
 	my $rate = format_bytes($bytes/$ctime, si => 1);
@@ -216,25 +219,27 @@ sub fatal {
     my $filename = shift;
     $log->error($filename, $message);
 
-    my $loc;
-    eval {
-	$loc = File::HomeDir->my_home();
-    };
-    if(!defined $loc || !-d $loc){
-	$log->warning($loc, "cannot write to homedir!");
-	$loc = "/tmp";
+    if($0 !~ m{^t/.+[.]t$}){ # skip this when run from a unit test
+	my $loc;
+	eval {
+	    $loc = File::HomeDir->my_home();
+	};
+	if(!defined $loc || !-d $loc){
+	    $log->warning($loc, "cannot write to homedir!");
+	    $loc = "/tmp";
+	}
+	
+	$log->message($loc, "dumping log file to $loc");
+	
+	$loc .= "/BACKUP_ERRORS<". time(). ">.log.yml";
+	eval {
+	    DumpFile($loc, $log);
+	};
+	if($@){
+	    $log->warning($loc, "sorry, couldn't write the logfile!");
+	}
     }
     
-    $log->message($loc, "dumping log file to $loc");
-    
-    $loc .= "/BACKUP_ERRORS<". time(). ">.log.yml";
-    eval {
-	DumpFile($loc, $log);
-    };
-    if($@){
-	$log->warning($loc, "sorry, couldn't write the logfile!");
-    }
-
     if(!$log->{internal}->{print}){
 	map {print $_->string. "\n"} $log->retrieve_all;
     }

@@ -21,7 +21,6 @@ mkdir "$root/dest" or die;
 my $ae = Archive::Extract->new(archive=>$archive);
 $ae->extract(to=>"$root/src");
 my @files = @{$ae->files};
-die "not enough files in archive" if @files < 100;
 map {s{^[.]/}{}} @files;
 @files = grep {-e "$root/src/$_" && !-d _} @files; # directories get tested automagically
 

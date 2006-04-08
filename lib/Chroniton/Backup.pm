@@ -18,9 +18,14 @@ use DateTime;
 use Chroniton::Messages;
 use Chroniton::Message;
 use Chroniton::Event;
+use Chroniton::Event::FileInSet;
 
 our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(backup clone_dir);
+
+=head1 NAME
+
+Chroniton::Backups - implements full and incremental backups
 
 =head1 EXPORT
 
@@ -182,7 +187,8 @@ sub clone_dir {
 		
 		if($error){
 		    $log->error($src_file,
-				"couldn't copy $src_file to $dest_file: $!"); 
+				"couldn't copy $src_file to $dest_file: $!");
+		    next;
 		    
 		}
 		else {
@@ -205,9 +211,14 @@ sub clone_dir {
 		    $log->add($against_file,
 			      "couldn't link $against_file to $dest_file ".
 			      "(source $src_file, mapping: $from)");
+		    next;
 		}
 	    } # end link
 	} # end dir/not dir if
+
+	# make an entry in the file list, since this file backed up OK
+	$log->add(Chroniton::Event::FileInSet->new($src_file, $dest_file));
+	
     } # end readdir
     closedir $dir;
 }

@@ -4,13 +4,20 @@
 
 use strict;
 use warnings;
-use Time::HiRes qw(time);
-use Getopt::Euclid;
+
+use Chroniton::Config;
+use Chroniton::Messages;
+use Chroniton::State;
 use Chroniton;
+
+use Getopt::Euclid;
+use Lingua::EN::Inflect qw(NO);
+use Term::ReadLine;
+use Time::Duration qw(ago);
+use Time::HiRes qw(time);
 use YAML qw(LoadFile);
 
 my $VERSION = $Chroniton::VERSION;
-
 
 die "Can't be verbose and quiet simultaneously!" 
   if $ARGV{'-q'} && $ARGV{'-v'};
@@ -27,7 +34,7 @@ if(exists $ARGV{'--log'}){
 
 my $then = time();
 my $chroniton = Chroniton->new({verbose => $ARGV{'-v'},
-				interactive => 1});
+				interactive => !$ARGV{'-q'}});
 die "couldn't initialize chroniton" if !$chroniton;
 
 # do the operation
@@ -48,9 +55,7 @@ elsif($ARGV{'--mode'} eq "archive"){
 }
 
 elsif($ARGV{'--mode'} eq "restore"){
-    # restore
-    my $filename = $ARGV{"--file"};
-    $chroniton->restore($filename);
+    do_restore();
 }
 
 else {
@@ -72,10 +77,59 @@ exit 0;
 
 # __ end of main __
 
+sub do_restore {
+    # restore
+    my $filename = $ARGV{"--file"};
+    my $revision = $ARGV{"--revision"};
+    my $term = Term::ReadLine->new("chroniton.pl");
+    my $version;
+
+    $filename = $term->readline("filename> ") unless $filename;
+    
+    while(!$version){
+	my @possibilities = $chroniton->restorable($filename);
+	{ 
+	    my %seen;
+	    @possibilities = grep {$seen{$_->[1]}++ == 0} @possibilities;
+	}
+	
+	my $i = scalar(@possibilities);
+	$version = $possibilities[0]->[0] and last if $i == 1; # ends loop
+	
+	if($i > 0){
+	    print NO("version", $i). " of $filename available. \n";
+	    
+	    foreach(@possibilities){
+		my $permissions = $_->[2];
+		my $owners = join(' ', ($_->[4], $_->[5]));
+		
+		print " ".--$i.") $filename from ".
+		  ago(time - $_->[1]);
+	    }
+
+	    print "\nEnter revision to restore from, or C-c to quit.\n";
+	    $revision = "not a number";
+	    while($revision !~ /^\d+$/ || !exists $possibilities[$revision]){
+		$revision = $term->readline("revision> ");
+		exit 1 if $revision =~ /^(?:q|qu|qui|quit)$/;
+	    }
+	    
+	    my $mtime = ago(time - $possibilities[$revision]->[1]);
+	    print "Revision $revision (from $mtime) selected.\n";
+	    $version = $possibilities[$revision]->[0]; # ends loop
+	}
+	else {
+	    print "$filename was not found.  Enter a new filename, or C-c to quit.\n";
+	    $filename = $term->readline("filename> ", $filename);
+	    exit 1 if $filename =~ /^(?:q|qu|qui|quit)$/;
+	    # loop around to search for revisions
+	}
+    }
+    
+    $chroniton->restore($filename, $version, $ARGV{'--force'});
+}
+
 sub do_log {
-    require Chroniton::Config;
-    require Chroniton::State;
-    require Chroniton::Messages;
     my $file = shift;
     no warnings;
     
@@ -83,7 +137,7 @@ sub do_log {
 	# ignore the user, his choice of logfiles is poor
 	my $config = Chroniton::Config->new;
 	my $log_o  = Chroniton::Messages->new; 
-	my $state  = Chroniton::Config->new($config, $log_o);
+	my $state  = Chroniton::State->new($config, $log_o);
 	$file = $state->{last_log};
 	die "No log file to view. Try specifying one on the command line." 
 	  if !-e $file;
@@ -121,7 +175,28 @@ chroniton.pl - Interface to the Chroniton backup system
 
 =head1 VERSION
 
-This document refers to chroniton.pl version 0.01_1.
+This document refers to chroniton.pl version 0.01_2.
+
+=head1 CONFIGURATION
+
+Chroniton is configured via a config file (config.yml) stored in a
+"Chroniton" directory (in your application data directory, as
+determined by C<File::HomeDir>.
+
+Options are (as of version 0.01_2):
+
+=over
+
+=item backup_locations
+
+A list of directories to backup.
+
+=item storage_directory
+
+Where your backups (and Chroniton state information) is stored.  Must
+be a directory, not a link to one.
+
+=back
 
 =head1 OPTIONS
 
@@ -166,7 +241,20 @@ The default action.  Reads the configuration file, determines a
 sequence of full, incremental, or archive operations to execute, and
 performs these operations.
 
+=item restore
+
+Restores the file (or directory) specified by the C<--file> option.
+If the file already exists, exits with an error.  If C<--force> is
+specified, restore will replace pre-existing file.  (force is
+DANGEROUS: entire directory trees may be irrevocably wiped out,
+RECURSIVELY!  Please refer to L</COPYRIGHT> before C<--force>-ing a
+restore.)
+
 =back
+
+=item --file <file>
+
+Specifies the file to act upon.  (i.e. for restore).
 
 =item --config
 
@@ -175,6 +263,10 @@ Opens the configuration file in $EDITOR for editing.  Other options are ignored.
 =item --log [<file>]
 
 Prints out the most recent log, or the file specified by <file>.
+
+=item --force
+
+Force chroniton to do something that it shouldn't.  DANGEROUS.
 
 =item --version
 

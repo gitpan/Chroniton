@@ -81,7 +81,7 @@ sub save {
     $self->{config} = $config; 
     $self->{log}    = $log;
     
-    $log->fatal($@) if($@ || !-e "$dir/$STATEFILE");
+    $log->fatal($@) if($@);
     $log->debug("$dir/$STATEFILE", "state was written back ok");
 }
 
@@ -92,11 +92,12 @@ sub _rebuild_state {
 }
 
 
-# autosave
-sub DESTROY {
-    my $self = shift;
-    $self->save;
-}
+# this isn't necessary - state doesn't need to be saved unless someone
+# wants it to be
+#sub DESTROY {
+#    my $self = shift;
+#    $self->save;
+#}
 
 =head1 TODO
 

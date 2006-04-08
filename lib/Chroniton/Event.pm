@@ -10,6 +10,7 @@ use constant (_copy    => 10,
 	      _link    => 11,
 	      _delete  => 12,
 	      _mkdir   => 13,
+	      _file_create  => 0,
 	     );
 
 =head1 NAME

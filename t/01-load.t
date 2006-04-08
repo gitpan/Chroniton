@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-use Test::More tests=>7;
+use Test::More tests=>8;
 
 BEGIN {
     use_ok( 'Chroniton' );
@@ -28,4 +28,8 @@ BEGIN {
 
 BEGIN {
     use_ok( 'Chroniton::State' );
+}
+
+BEGIN {
+    use_ok( 'Chroniton::Event::FileInSet' );
 }

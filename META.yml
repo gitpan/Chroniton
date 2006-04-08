@@ -22,11 +22,13 @@ requires:
   File::Copy: 0
   File::HomeDir: 0
   File::Spec::Functions: 0
+  File::Stat::ModeString: 0
   Getopt::Euclid: 0
   Lingua::EN::Inflect: 0
   Number::Bytes::Human: 0
+  Time::Duration: 0
   Time::HiRes: 0
   YAML: 0
   base: 0
   constant: 0
-version: 0.01_1
+version: 0.01_2

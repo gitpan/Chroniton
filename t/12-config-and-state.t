@@ -17,6 +17,10 @@ use Chroniton::Messages;
 use Chroniton::Config;
 use Chroniton::State;
 
+eval {
+    Chroniton::Config->new;
+}; # will fail the first time :(
+
 my $config = Chroniton::Config->new;
 my $log    = Chroniton::Messages->new;
 
@@ -52,6 +56,7 @@ undef $state;
 # bring it back in, with the "foo bar" bit
 $state = Chroniton::State->new($config, $log);
 is($state->{foo_bar}, "foo bar", "state persists?"); #12
+$state->save;
 undef $state;
 
 # corrupt the statefile
@@ -59,20 +64,19 @@ unlink "/tmp/test.$$/state.yml";
 open(my $sf, ">/tmp/test.$$/state.yml");
 print {$sf} "           this file has been corrupted!";
 close $sf;
-$state = Chroniton::State->new($config, $log);
-# TODO: really rebuild, not just blank
+eval {
+    $state = Chroniton::State->new($config, $log);
+};
 is($state->{foo_bar}, undef, "corrupted state file rebuilt"); #13
 
 unlink "/tmp/test.$$/state.yml";
 rmdir "/tmp/test.$$";
 
+$state = Chroniton::State->new($config, $log);
 eval {
-    $state = Chroniton::State->new($config, $log);
+    $state->save;
 };
-ok($@, "state shouldn't load if there's nowhere to put it"); #14
-
-mkdir "/tmp/test.$$"; # so cleanup doesn't generate YAML errors
-
+ok($@, "state shouldn't save if there's nowhere to put it"); #14
 # done.
 
 END {

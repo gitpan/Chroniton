@@ -25,6 +25,8 @@ requires       ('Number::Bytes::Human');
 requires       ('Time::HiRes');
 requires       ('File::Copy');
 requires       ('Exporter');
+requires       ('Time::Duration');
+requires       ('File::Stat::ModeString');
 build_requires ('Test::More');
 build_requires ('Test::Strict');
 build_requires ('Test::Pod::Coverage');

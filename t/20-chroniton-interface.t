@@ -2,7 +2,7 @@
 # 12-chroniton-interface.t 
 # Copyright (c) 2006 Jonathan T. Rockway
 
-use Test::More tests=>15;
+use Test::More tests=>23;
 use Test::MockObject;
 use Time::HiRes;
 use Chroniton;
@@ -15,6 +15,8 @@ mkdir "/tmp/test.$$";
 die if !-w "/tmp/test.$$";
 mkdir "/tmp/test.$$/src";
 mkdir "/tmp/test.$$/dest";
+mkdir "/tmp/test.$$/src/dir";
+`touch /tmp/test.$$/src/dir/dirfoo`;
 `touch /tmp/test.$$/src/foo`;
 `touch /tmp/test.$$/src/bar`;
 
@@ -75,6 +77,7 @@ ok(-r "$where/../state.yml", "state exists"); #9
 
 
 # force incremental this time
+`touch /tmp/test.$$/src/dir/dirfoo`; # so that something changes
 undef $chroniton;
 undef $where;
 $chroniton = Chroniton->new({verbose	  => 0,
@@ -90,21 +93,51 @@ ok(!$@, "no errors"); #10
 ok(-e $where, "backup exists"); #11
 ok(-r "$where/../state.yml", "state exists"); #12
 
-# none of these work yet
 eval {
     $where = $chroniton->force_archive;
 };
 like($@, qr/Not yet implemented/, "nyi, so error OK"); #13
 
-eval {
-    $where = $chroniton->restore("/foo");
-};
-like($@, qr/Not yet implemented/, "nyi, so error OK"); #14
+my @files;
 
 eval {
-    $where = $chroniton->restorable("/foo");
+    @files = $chroniton->restorable("/tmp/test.$$/src/dir");
 };
-like($@, qr/Not yet implemented/, "nyi, so error OK"); #15
+ok(scalar @files, "/dir/* is restorable"); #14
+
+unlink "/tmp/test.$$/src/dir/dirfoo";
+rmdir "/tmp/test.$$/src/dir";
+ok(!-e "/tmp/test.$$/src/dir", "dir was removed"); # 15
+ok(!-e "/tmp/test.$$/src/dir/dirfoo", "dir/dirfoo was removed"); # 16
+eval {
+    $chroniton->restore("/tmp/test.$$/src/dir", $files[0]->[0]);
+};
+ok(-e "/tmp/test.$$/src/dir", "dir was restored"); # 17
+ok(-e "/tmp/test.$$/src/dir/dirfoo", "dir/dirfoo was restored"); # 18
+
+eval {
+    @files = $chroniton->restorable("/tmp/test.$$/src/foo");
+};
+ok(scalar @files, "/foo is restorable"); # 19
+
+unlink "/tmp/test.$$/src/foo";
+ok(!-e "/tmp/test.$$/src/foo", "got rid of the original copy of foo"); #20
+eval {
+    $chroniton->restore("/tmp/test.$$/src/foo", $files[0]->[0]);
+};
+ok(-e "/tmp/test.$$/src/foo", "restored /foo"); #21
+
+# now try a forced restore
+my $count;
+eval {
+    $count = $chroniton->restore("/tmp/test.$$/src/foo", $files[0]->[0], 0);
+};
+is($count, undef, "restore should fail if not forced"); # 22
+
+eval {
+    $count = $chroniton->restore("/tmp/test.$$/src/foo", $files[0]->[0], 1);
+};
+is($count, 1, "restore should succeed if forced"); #23
 
 #print Dump($log);
 

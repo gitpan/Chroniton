@@ -11,20 +11,23 @@ use Chroniton::Messages;
 use Chroniton::Message;
 use Chroniton::Event;
 use Chroniton::Backup;
+use Chroniton::Restore;
 use YAML qw(DumpFile);
+use Lingua::EN::Inflect qw(NO);
 
-our $VERSION = '0.01_1';
+our $VERSION = '0.01_2';
 1;
 
 =head1 Chroniton
 
 =head1 NAME
 
-Chroniton.pm - main interface to the Chroniton backup system.
+Chroniton.pm - simple backup system with archiving and incremental backups
 
 This module is the interface to the exciting functionality provided by
 the other C<Chroniton::> modules.  The interface is action oriented,
-suitable for use by backup client software or even other scripts or modules.
+suitable for use by backup client software or even other scripts or
+modules.  If you're an end user, see L<chroniton.pl>.
 
 =head1 SYNOPSIS
 
@@ -32,6 +35,47 @@ suitable for use by backup client software or even other scripts or modules.
      $chroniton->backup;     
      print $chroniton->summary;
      exit 0;
+
+=head1 TODO and NOTES
+
+This is a development version because it's not yet feature complete.
+Mainly, archiving and an exclude list are not yet implemented.  It's
+also not as fast as possible, and the logging could be more efficient.
+However, the API is pretty stable, and everything that is implemented
+works according to the documentation.  I feel safe backing up my
+workstation with it.
+
+It's also pretty well tested: (88% is a B+ C<:)>.)
+
+     ------------------ ------ ------ ------ ------ ------ ------ ------
+     File                 stmt   bran   cond    sub    pod   time  total
+     ------------------ ------ ------ ------ ------ ------ ------ ------
+     Chroniton.pm         90.2   46.4   68.8  100.0  100.0    9.3   84.8
+     Backup.pm            91.3   70.4   58.3  100.0  100.0   31.9   84.8
+     Config.pm            94.7   60.0   66.7  100.0  100.0    4.2   87.8
+     Event.pm            100.0    n/a    n/a  100.0  100.0    1.9  100.0
+     FileInSet.pm        100.0  100.0    n/a  100.0  100.0    7.3  100.0
+     Message.pm          100.0  100.0  100.0  100.0  100.0   16.1  100.0
+     Messages.pm          89.2   83.3   66.7  100.0  100.0   18.0   88.5
+     Restore.pm           91.9   68.0   67.9  100.0  100.0    7.7   83.9
+     State.pm            100.0  100.0  100.0  100.0  100.0    3.7  100.0
+     Total                92.9   70.9   71.1  100.0  100.0  100.0   88.5
+     ------------------ ------ ------ ------ ------ ------ ------ ------
+
+Note that the test suite plays around with your filesystem a bit.  It
+adds a config file (that you'll want later anyway), and touches /tmp.
+I'll fix this in the production version -- some other Test::* modules
+need to be written first.
+
+As always, bug reports, feature request, rants about why this package
+is unnecessary, etc., are welcomed.  I'd especially like to hear from
+Windows users, since I don't have a Windows machine anywhere, nor do I
+understand the semantics of the Windows filesystem.
+
+I'd also like to know if the individual component modules would be
+useful to anyone if they were available separately.  Logging has been
+done to death, but I think there are some useful features in my
+L<Chroniton::Messags> module.  Let me know what you think.
 
 =head1 CONSTRUCTOR
 
@@ -216,11 +260,29 @@ sub force_archive {
 }
 
 sub restorable {
-    die "Not yet implemented.";
+    my $self	  = shift;
+    my $filename  = shift;
+    my $config    = $self->_get_config;
+    my $log       = $self->_get_log;
+    my $from      = $config->destination;
+    
+    $self->_msg("Searching backups for $filename.  This may take a while.");
+    return Chroniton::Restore::restorable($log, $filename, $from);
 }
 
 sub restore {
-    die "Not yet implemented.";
+    my $self = shift;
+    my $filename = shift;
+    my $from = shift;
+    my $force = shift;
+    my $log = $self->_get_log;
+    
+    $self->_msg("Restoring $filename from $from");
+    my $files = Chroniton::Restore::restore($log, $filename, $from, $force);
+    $self->_msg( NO("file", $files). " restored");
+    $self->_finish_up;
+    
+    return $files;
 }
 
 sub summary {
@@ -234,17 +296,20 @@ sub _finish_up {
     my $then  = $self->_get_config->{time};
     my $dest  = $self->_get_config->destination;
     # save state
-    $self->_msg("Writing state information back to disk.  This may take a while.");
+    $self->_msg("Writing state information back to disk. ",
+		"This may take a while.");
     
     if($log->retrieve("error") == 0 && $log->retrieve("warning") == 0){
 	$state->{last_log} = "";
 	$self->_msg("Not writing log to disk - no errors or warnings.");
     }
     else {
+	# save log
 	$state->{last_log} = "$dest/log_$then.yml";
 	DumpFile("$dest/log_$then.yml", $log);
     }
 
+    # save state
     $state->save;
 }
 
@@ -253,12 +318,17 @@ sub _write_contents {
     my $where = shift;
     my $log   = $self->_get_log;
 
-    my @files = $log->retrieve("event");
-    @files = grep {$_->{event_id} == 10 || $_->{event_id} == 11; } @files;
+    my @files = $log->retrieve("files");
+    my %files;
+    
+    # hashify @files for quick lookups later
+    foreach my $file (@files){
+	$files{$file->{original}} = $file;
+    }
 
     $log->debug("$where/contents.yml", "Writing file list to disk");
     eval {
-	DumpFile("$where/contents.yml", \@files);
+	DumpFile("$where/contents.yml", \%files);
     };
     $log->error("$where/contents.yml", "problem saving file list") if $@;
 }
@@ -293,13 +363,8 @@ Archives all backup data in the backup storage directory.
 =head2 restorable(filename)
 
 Returns a list of all restorable versions of C<filename>.  The list is
-a list of array references, which are in the following_format:
-
-     [filename, location_of_backup, modification_date]
-
-C<filename> is the original filename, C<location_of_backup> is where
-the backup is located, and C<modification_date> is the date when the
-file was last modified.
+a list of array references, which is formatted according to
+L<Chroniton::Restore/FUNCTIONS/restorable>.
 
 =head2 restore(path, [from])
 

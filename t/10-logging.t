@@ -65,8 +65,9 @@ ok(defined $@, "fatal dies"); # 12
 
 undef $log;
 
-# make a new log, to test printing and logs without copies (improves branch coverage)
-$log = Chroniton::Messages->new(\*STDERR);
+# make a new log, to test printing and logs without copies
+open NULL, ">/dev/null";
+$log = Chroniton::Messages->new(\*NULL);
 ok($log, "log creation ok"); # 13
 $log->debug("foo", "bar");
 my $event = Chroniton::Event->event("bar", "baz", -12, 87);

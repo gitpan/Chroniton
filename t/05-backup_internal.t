@@ -47,6 +47,6 @@ is($r, 1, "non-identical files should not be identical");
 
 END {
     # clean up
-    unlink "test.$$.a";
-    unlink "test.$$.b";
+    eval {unlink "test.$$.a"};
+    eval {unlink "test.$$.b"};
 }

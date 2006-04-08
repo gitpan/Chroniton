@@ -1,1 +1,15 @@
-WRITE ME
+Install this like you install any other module:
+
+perl Makefile.PL
+make
+make test
+make install
+
+or, if make isn't around on your system:
+
+perl Build.PL
+./Build
+./Build test
+sudo ./Build install
+
+Please see bin/chroniton.pl and lib/Chroniton.pm for documentation.
