@@ -6,72 +6,164 @@ package Chroniton::Restore;
 use strict;
 use warnings;
 
+use Archive::Extract;
 use Chroniton::Event;
-use Exporter;
 use File::Copy qw(cp);
 use File::Stat::ModeString;
 use Time::HiRes qw(time);
-use YAML qw(LoadFile);
-
-our @ISA = qw(Exporter);
-our @EXPORT_OK = qw(restore restorable);
+use YAML::Syck qw(LoadFile);
+use File::Temp qw(tempdir);
+require IO::Zlib;
 
 =head1 NAME
 
 Chroniton::Restore - implements restoration from backups
 
-=head1 FUNCTIONS
+=head1 SYNOPSIS
 
-In both of these functions, C<log> is the standard
-L<Chronition::Messages|Chroniton::Messages> object.
+    my $restore = Chroniton::Restore->new($config, $state, $log);
+    my @versions = $restore->restorable("/foo/bar");
+    $restore->restore($versions[0]);
 
-=head2 restore(log, filename, from, [force])
+=head1 METHODS
 
-Restores C<filename> (the original filename) from C<from>.  C<from> is
-the path to the backup set containing C<filename>. Fails if C<filename> already
-exists on the filesystem, unless C<force> is set. (DANGEROUS!)
+=head2 new(config, state, log)
+
+Standard config, state, and log objects.  Unless you're
+C<Chroniton.pm> you shouldn't be calling this.
+
+=cut
+
+sub new {
+    my ($class, $config, $state, $log) = @_;
+    die unless $config && $state && $log;
+    
+    my $self = {config   => $config,
+		state    => $state,
+		log      => $log, 
+	        remove   => [],       
+		contents => {},     };
+
+    bless $self, $class;
+    
+    $log->message("", "loading information about backups");
+    foreach my $backup ($state->backups, $state->archives){
+	next if !$backup;
+	my $contents = $backup->{contents};
+	next if !$contents;
+	
+	my $location   = $backup->{location};
+	$log->debug($location, "adding $location to list of known backups");
+	
+	$self->{contents}->{$location} ||= $self->_load_contents($contents);
+    }
+    
+    return $self; 
+}
+
+=head2 restore(file, [force])
+
+Restores the C<Chroniton::File> object represented by C<file>.  If
+C<force> is specified, the file will be overwritten if it exists.
+(Otherwise, the existence will throw a fatal error.)
 
 Returns the number of files that were successfully restored.
 
 =cut
 
-my %CONTENTS_CACHE;
-
 sub restore {
-    my ($log, $filename, $from, $force) = @_;
-    my $source = "$from/$filename";
-    $log->debug($filename, "attempting to restore $source to $filename");
-    $log->fatal("no file specified") if !$filename || !$from;
-
-    # deal with error conditions
+    my ($self, $file, $force) = @_;
+    my $log = $self->{log};
+    my $filename = $file->{name};
+    my $from     = $file->{location};
+    
+    $log->fatal("no file specified") if !$filename;
+    $log->fatal("don't know where to restore from") if !$from;
     $log->fatal("$filename already exists.  Move it out of the way or ".
-		"specify 'force' (DANGEROUS)")
+		"specify 'force' (DANGEROUS)", undef, 1)
       if -e $filename && !$force;
 
+    my $tmp;
+
+    # deal with compression
+    if($file->{archive}){ #&& $file->{type} eq "directory"){
+	$tmp = tempdir(CLEANUP => 1);
+	$log->fatal($filename, "can't create a temporary directory")
+	  if !$tmp;
+	
+	# archived.  decompress and pretend this never happened
+	$log->debug($filename, "$filename is archived, ".
+		               "decompressing everything to $tmp!");
+
+	my $archive = "$from/data.tar.gz";
+	if(! -e $archive){
+	    $log->fatal($archive, "archive $archive doesn't exist");
+	}
+	
+	$Archive::Extract::PREFER_BIN = 1;
+	my $ae = Archive::Extract->new(archive => $archive);
+	my $status = $ae->extract(to => $tmp);
+	
+	if(!$status){
+	    $log->error("$from/data.tar.gz", "couldn't decompress archive ".
+			"$from/data.tar.gz: ". $ae->error);
+	    return;
+	}
+	else {
+	    $log->debug("$from/data.tar.gz", "everything extracted OK");
+	}
+    }
+
+    # now figure out where the backup is
+    my $source;
+    my $archive = $file->{archive};
+    if (!$archive) {
+	$source = "$from/$filename";
+    }
+    else {
+	$source = "$tmp/$archive/$filename";
+    }
+    $log->debug($filename, "attempting to restore $source to $filename");
+
+    # deal with error conditions
     $log->fatal("cannot restore from $source from $from: file does not exist")
       if !-e $source;
-
-    # if we don't have any metadata, that's bad... but do the restore anyway
-    my $info = _get_file_data($log, $filename, $from) or
-      $log->warning($filename, "couldn't look up file information in ".
-		               "contents.yml");
 
     # do the restore, since it appears possible
     my $files_restored = 0;
 
     if(-d $source){
-	$files_restored = _restore_directory($log, $source, $filename, $from);
+	# get the contents
+	my $contents = $self->{contents}->{$from};
+
+	if($archive){
+	    my @files = map {@$_} values %{$contents->{files}};
+	    @files = grep {$_->{archive} eq $archive} @files;
+	    
+	    my %files;
+	    foreach(@files){
+		my $name = $_->{name};
+		$files{$name} = [$_];
+	    }
+	    
+	    $contents->{files} = \%files;
+	}
+	
+	# then do the restore
+	$files_restored = $self->_restore_directory($source, $filename, $contents);
     }
     else {
-	$files_restored = _restore_file($log, $source, $filename,
-					$info->{metadata});
+	$files_restored = $self->_restore_file($source, $filename, $file);
+					       
     }
 
     return $files_restored;
 }
 
 sub _restore_directory {
-    my ($log, $from, $to, $root) = @_;
+    my ($self, $from, $to, $contents) = @_;
+    my $log = $self->{log};
+    
     $log->debug($from, "restoring (d) $from to $to");
     
     my $files_restored = 0;
@@ -81,16 +173,18 @@ sub _restore_directory {
 	my @subdirs = split m{/}, $to;
 	my $d;
 	my @errors;
-	foreach(@subdirs){
-	    $d .= "/$_";
-	    mkdir $d or push @errors, $!;
-	}
 	if(!-d $to){
-	    $log->error($to, "could not create $to: ". join(", ", @errors));
-	    return;
-	}
-	else {
-	    $log->add(Chroniton::Event->mkdir($to));
+	    foreach(@subdirs){
+		$d .= "/$_";
+		mkdir $d or push @errors, $!;
+	    }
+	    if(!-d $to){
+		$log->error($to, "could not create $to: ". join(", ", @errors));
+		return;
+	    }
+	    else {
+		$log->add(Chroniton::Event->mkdir($to));
+	    }
 	}
     }
 
@@ -102,42 +196,44 @@ sub _restore_directory {
 	my $dest   = "$to/$entry";
 	
 	if(!-d $source){
-	    my $entry_ref = _get_file_data($log, $dest, $root);
-	    $files_restored += _restore_file($log, $source, $dest, $entry_ref->{metadata});
+	    my $filedata = ($contents->get_file($dest))[0];
+	    $files_restored += $self->_restore_file($source, $dest, $filedata);
 	}
 	else {
 	    # recurse!
-	    $files_restored += _restore_directory($log, $source, $dest, $root);
+	    $files_restored += $self->_restore_directory($source, $dest,
+							 $contents);
 	}
     }   
 
     # and finally set the attributes on it
-    my $metadata = _get_file_data($log, $to, $root)->{metadata};
-    _restore_metadata($log, $to, $metadata);
-
+    eval {
+	my $filedata = ($contents->get_file($to))[0];
+	$filedata->apply_metadata($to, $log);
+    };
+    if($@){
+	$log->warning($to, "couldn't apply metadata: $@");
+    }
     return $files_restored;
 }
 
 sub _restore_file {
-    my ($log, $from, $to, $metadata_ref) = @_;
+    my ($self, $from, $to, $filedata) = @_;
+
+    my $log = $self->{log};
     $log->debug($from, "restoring $from to $to");
-    
-    # dereference symlinks
-    my $max_levels = 100;
-    my $original = $from;
-    while ($max_levels-- && -l $from){
-	$from = readlink $from;
-    }
-    
-    # if it's still a link, fail.
-    if(-l $from){
-	$log->error($original, "too many levels of symbolic links");
+
+    if(!-e $from){
+	$log->error($to, "original file $from not found");
 	return 0;
     }
 
     my $status = 1;
-    $status = unlink $to if-e $to; # TFM said restoring to an existing file would kill it, it's not lying.
-    $log->warning($to, "existing destination $to could not be unlinked, data may not be restored!") if !$status;
+    $status = unlink $to if -e $to; # TFM said restoring to an existing file
+                                    # would kill it -- it wasn't lying.
+    $log->warning($to, "existing destination $to could not be unlinked,".
+		       " data may not be restored!") 
+      if !$status;
     
     my $time = time();
     $status = cp($from, $to);
@@ -150,98 +246,65 @@ sub _restore_file {
 	$log->add(Chroniton::Event->copy($from, $to, time() - $time, $size));
     }
     
-    # restore metadata
-    _restore_metadata($log, $to, $metadata_ref);
-
-    # TODO: extended filesystem attributes.
+    # and finally set the attributes on it
+    eval {
+	$filedata->apply_metadata($to, $log);
+    };
+    if($@){
+	$log->warning($to, "couldn't apply metadata: $@");
+    }
     return 1;
 }
 
-sub _restore_metadata {
-    my ($log, $to, $metadata_ref) = @_;
-    
-    my $mtime = $metadata_ref->{mtime} || undef; 
-    my $atime = $metadata_ref->{atime} || undef;
+=head2 restorable(filename)
 
-    utime $atime, $mtime, $to # set to time() if atime and mtime weren't in the metadata list
-      or $log->warning($to, "could not set access or modification times on $to: $!");
-    
-    my $permissions = $metadata_ref->{permissions} || "-rw-r--r--"; # use a sane default
-    my $n_permissions = string_to_mode($permissions);
-    chmod $n_permissions, $to 
-      or $log->warning($to, "couldn't set permissions $permissions on $to");
-    
-    my $user  = $metadata_ref->{uid};
-    my $uid   = getpwnam($user) || -1;
-    my $group = $metadata_ref->{gid};
-    my $gid = getgrnam($group) || -1;
-
-    chown $uid, $gid, $to
-      or $log->warning($to, "couldn't set ownership $uid:$gid ($user:$group) on $to");
-    return;
-}
-
-=head2 restorable(log, filename, from, [fuzzy])
-
-Lists all files under directory C<from> that are versions of
-C<filename>.  Examines the C<contents.yml> under each subdirectory of
-C<from>, looking for C<filename>.  If fuzzy is true, looks for
-similarly named files.  (TODO: implement this.)
-
-Returns a list of references, where each reference is:
-
-     [location_of_backupset, modification_date, permissions, size, user, group]
-      0                      1                  2            3     4     5
-C<location_of_backup> is where the backup is located, and
-C<modification_date> is the date when the file was last modified.
+Lists all revisions of all files that are versions of
+C<filename>. Returns a list of C<Chroniton::File> objects.
 
 =cut
 
 sub restorable {
-    my ($log, $filename, $from, $fuzzy) = @_;
+    my ($self, $filename) = @_;
+    my $log = $self->{log};
     my @results;
-    
-    $log->debug($from, "examining $from for versions of $filename");
-    opendir(my $dh, $from) or $log->fatal("cannot inspect $from: $!");
-    foreach my $subdir (readdir $dh){
-	next if $subdir eq '.' || $subdir eq '..';
-	my $subdir = "$from/$subdir";
-	next if !-d $subdir;
+    my $count;
+    foreach my $root (keys %{$self->{contents}}){
+	$log->debug($filename, "looking for $filename in '$root'");
+	my @files = $self->{contents}->{$root}->get_file($filename);
 	
-	$log->message($subdir, "looking for contents.yml in $subdir");
-	my $data = _get_file_data($log, $filename, $subdir, $fuzzy);
-	
-	$log->debug("$subdir/contents.yml", "found $filename in $subdir") if $data;
-	push @results, [$subdir,
-			$data->{metadata}->{mtime},
-			$data->{metadata}->{permissions},
-			$data->{metadata}->{size},
-			$data->{metadata}->{uid},
-			$data->{metadata}->{gid},
-		       ] if $data;
-	
+	foreach(@files){
+	    push @results, $_ if $_;
+	}
     }
-    # FIXME: use some standard function to filter this, mtime might not
-    # be the key for much longer
+    
+    $count = scalar @results;
+    
     {
 	my %seen;
-	@results = grep {$seen{$_->[0]}++ == 0} @results;
+	@results = 
+	  grep {
+	      $seen{$_->metadata->{md5}}++ == 0
+		unless $_->metadata->{permissions} =~ /^d/ 
+	    } @results;
     }
-    return sort {$a->[1] <=> $b->[1]} @results;
+    $log->debug($filename, scalar @results. " unique variants of ".
+		           "$filename out of $count total found");
+    
+    return sort {$a->metadata->{mtime} <=> $b->metadata->{mtime}} @results;
 }
 
-sub _get_file_data {
-    my ($log, $filename, $from) = @_;
+sub _load_contents {
+    my ($self, $from) = @_;
+    my $log = $self->{log};
+    my $result;
     eval {
-	$CONTENTS_CACHE{$from} = LoadFile("$from/contents.yml")
-	  if !exists $CONTENTS_CACHE{$from};
+	$result = LoadFile("$from")
     };
-    if($@){
-	$log->warning($from, "$from may be a corrupt backup! ($@)");
+    if($@ || !$result->isa("Chroniton::BackupContents")){
+	$log->warning($from, "$from may be a corrupt contents file! ($@)");
 	return;
     }
-    my %files = %{$CONTENTS_CACHE{$from}};
-    return $files{$filename};
+    return $result;
 }
 
 1;

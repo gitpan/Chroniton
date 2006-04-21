@@ -13,26 +13,27 @@ use File::Copy qw(cp);
 use File::Spec::Functions qw(abs2rel catfile splitpath catfile);
 use Time::HiRes qw(time);
 use DateTime;
-#use Digest::SHA1; 
+use Digest::MD5;
 
 use Chroniton::Messages;
 use Chroniton::Message;
 use Chroniton::Event;
-use Chroniton::Event::FileInSet;
+use Chroniton::Config;
+use Chroniton::BackupContents;
 
 our @ISA = qw(Exporter);
-our @EXPORT_OK = qw(backup clone_dir);
+our @EXPORT_OK = qw(backup);
 
 =head1 NAME
 
-Chroniton::Backups - implements full and incremental backups
+Chroniton::Backup - implements full and incremental backups
 
 =head1 EXPORT
 
 None of these subroutines are exported by default.  Please load them
 into your namespace by specifying them on the module load line:
 
-    use Chroniton::Backup qw(backup clone_dir);
+    use Chroniton::Backup qw(backup);
 
 =head2 backup($config, $log, \@sources, $destination, [$against])
 
@@ -43,9 +44,8 @@ identically named files in $against.  If the files are the same, the new
 file in $destination is linked to the version in $against (instead of being 
 copied from the $source).
 
-Returns the path of the newly created storage directory.  Dies on a
-fatal error, otherwise logs errors and warnings to $log, a
-C<Chroniton::Messages> object.
+Returns a BackupSet object.  Dies on a fatal error, otherwise logs
+errors and warnings to $log, a C<Chroniton::Messages> object.
 
 =cut
 
@@ -77,12 +77,20 @@ sub backup {
     }
     mkdir $storage_dir or 
       $log->fatal("cannot create storage directory: $!", $storage_dir);
+    my $contents = Chroniton::BackupContents->new($storage_dir);
     
     # back up each source
     foreach my $src (@sources){
+	if(!-e $src){
+	    $log->error($src, "can't backup $src because it doesn't exist");
+	    next;
+	}
+
 	my $dest = "$storage_dir/$src";
 	my $this_against = "$against/$src" if $against;
 	my @dirs = split m{/}, $src;
+	my $adir = shift @dirs;
+	unshift @dirs, $adir if $adir ne "/";
 	
 	# make original parent directories in the backup dir
 	my $dir = $storage_dir;
@@ -90,18 +98,18 @@ sub backup {
 	    $dir .= "/$_";
 	    mkdir $dir;
 	    $log->add(Chroniton::Event->mkdir($dir))      if  -d $dir;
-	    $log->fatal("couldn't create $dir: $!", $dir) if !-d $dir;
+	    $log->fatal("couldn't create $dir: $!", $dir) if  !-e $dir;
 	}
-	
+	$contents->add($src);
 	# do it!
-	clone_dir($config, $log, $src, $dest, $this_against, \&_compare_files);
+	_clone_dir($config, $log, $contents, $src, $dest, $this_against, \&_compare_files);
     }
 
     $log->message($sources, "$mode backup of $sources completed");
-    return $storage_dir;
+    return $contents;
 }
 
-=head2 clone_dir($config, $log, $src, $dest, [$against, $compare_ref])
+=head2 _clone_dir($config, $log, $contents, $src, $dest, [$against, $compare_ref])
 
 Clones $src into $dest, recursively decending into subdirectories,
 depth first.  If $against is specified, each file in $src is compared
@@ -115,15 +123,16 @@ warnings to $log, a C<Chroniton::Messages> object.
 
 =cut
 
-sub clone_dir {
-    my ($config, $log, $src, $dest, $against, $compare_ref) = @_;
+sub _clone_dir {
+    my ($config, $log, $contents, $src, $dest, $against, $compare_ref) = @_;
 
     my $mode = ($against) ? "incremental" : "full";
     $log->debug($src, "cloning $src to $dest (mode: $mode)".
 		(($against) ? " against $against" : "")); 
 
     if($mode eq "incremental" && !-d $against){
-	$log->warning($against, "increment dir $against does not exist");
+	$log->message($against, "increment dir $against does not exist");
+	undef $against; # do a full backup in this case
     }
     
     my $status = opendir(my $dir, $src);
@@ -134,18 +143,20 @@ sub clone_dir {
     
         
     # TODO: what happens when readdir fails midway thru?
-    #while(my $file = readdir $dir){
-    my @files = readdir $dir; # benchmark indicates that this is 34% faster
+    my @files = readdir $dir; 
+    my @exclude_list = $config->exclude;
+    @files = _filter_filelist($log, $src, [@files], [@exclude_list]);
+    
     foreach my $file (@files){
 	
 	my $src_file      = "$src/$file";
 	my $dest_file     = "$dest/$file";
 	my $against_file  = "$against/$file" if $against;
+	my $original;
 	
 	next if $file eq '.' || $file eq '..';
-	next if -l $src_file && -d _; # skip directory symlinks
-
-	if(-d $src_file){
+	
+	if(-d $src_file && !-l $src_file){
 	    my $d = $dest_file; # short alias to save typing :)
 
 	    mkdir $d;
@@ -158,32 +169,40 @@ sub clone_dir {
 		$log->add(Chroniton::Event->mkdir($d)) if -d $d;
 		
 		# recurse
-		clone_dir($config, $log, $src_file, $d, $against_file, $compare_ref);
+		_clone_dir($config, $log, $contents, $src_file, $d,
+			   $against_file, $compare_ref);
 	    }
 	}
-
 	else {
-	    # it's a regular file
-	    # decide whether to copy or link
+	    # it's a regular file, so decide whether to copy or link
+
 	    my $what_to_do = 1; # copy by default
-	    if($against){ # if in incremental mode
+	    if($against && !-l $src_file){ 
 		$what_to_do = eval { &$compare_ref($src_file, $against_file);};
 		if($@){
-		    $log->error($src_file,
-				"could not compare $src_file and $against_file: $@");
+		    $log->error($src_file, "could not compare $src_file ".
+				           "and $against_file: $@");
 		    $what_to_do = 1;
 		}
 	    }
 	    
-	    if($what_to_do == 1){ # copy
+
+	    # decision has been made, act on it.
+	    if(-l $src_file || $what_to_do == 1){
 		my $error;
 		my $start = time(); # provide timing information
-		cp($src_file, $dest_file) or $error = $!;
-		my $end   = time();
+		if(-l $src_file){
+		    # if original file is a link, make the backup one, too
+		    my $target = readlink($src_file);
+		    symlink $target, $dest_file or $error = $!;
+		}
+		else {
+		    cp($src_file, $dest_file) or $error = $!;
+		}
+		my $end = time();
 		
 		# so user can't write to these files without trying
-		# TODO: save permissions somewhere, so we can restore them.
-		chmod 0400, $dest_file; 
+		chmod 0400, $dest_file unless -l $src_file; 
 		
 		if($error){
 		    $log->error($src_file,
@@ -192,35 +211,66 @@ sub clone_dir {
 		    
 		}
 		else {
+		    my $bytes;
+		    if(-l $src_file) {
+			$bytes = (lstat $dest_file)[7];
+		    }
+		    else {
+			$bytes = (stat $dest_file)[7];
+		    }
 		    $log->add(Chroniton::Event->copy($src_file,
 						     $dest_file,
 						     $end-$start,
-						     (stat $dest_file)[7]));
+						     $bytes));
 		}
 	    }
 	    
 	    else { # link
 		my $from = _compute_relative_path($against_file, $dest_file);
-		$log->debug($src_file, "$against_file -> ($from) -> $dest_file");
+		$original = $from;
 		my $status = symlink $from, $dest_file;
 		if($status){
 		    $log->add(Chroniton::Event->link($against_file,
 						     $dest_file));
 		}
 		else {
-		    $log->add($against_file,
-			      "couldn't link $against_file to $dest_file ".
-			      "(source $src_file, mapping: $from)");
+		    $log->error($against_file,
+				"couldn't link $against_file to $dest_file ".
+				"(source $src_file, mapping: $from)");
 		    next;
 		}
 	    } # end link
 	} # end dir/not dir if
 
 	# make an entry in the file list, since this file backed up OK
-	$log->add(Chroniton::Event::FileInSet->new($src_file, $dest_file));
+	eval {
+	    if($original){
+		$original =~ s{^/?(?:[.][.]/)+}{}g; # strip leading ../../
+	    }
+	    $contents->add($src_file, $original);
+	};
+	if($@){
+	    $log->error($src_file, "problem storing file metadata");
+	}
 	
     } # end readdir
     closedir $dir;
+}
+
+sub _filter_filelist {
+    my ($log, $prefix, $files_ref, $filter_ref) = @_;
+    my @okay_files;
+  FILE: foreach my $file (@$files_ref){
+	my $path = "$prefix/$file";
+      FILTER: foreach my $filter (@$filter_ref){
+	    if($path =~ $filter){
+		$log->debug($path, "skipping $path due to exclude rules");
+		next FILE;
+	    }
+	}
+	push @okay_files, $file;
+    }
+    return @okay_files;
 }
 
 # computes a path suitable for relative links.
@@ -253,29 +303,24 @@ sub _compute_relative_path {
 sub _compare_files {
     my $a = shift;
     my $b = shift;
-    
-    # TODO: i'd really like to use checksums, but they're too f*#&ing slow.
-    # ex: /Users/jon/Library (full backup, 558 seconds, 891MiB )
-    #                        (incremental, 879 seconds,  22MiB )
-    # OUCH. OUCH. OUCH.
-    
-    #my $sha_a = Digest::SHA1->new;
-    #my $sha_b = Digest::SHA1->new;
-    #
-    #open my $afh, "<", $a or die "could not open $a: $!";
-    #open my $bfh, "<", $b or die "could not open $b: $!";
-    #
-    #$sha_a->addfile($afh);
-    #$sha_b->addfile($bfh);
-
-    #return $sha_a->hexdigest ne $sha_b->hexdigest;
-
     return 1 if !-e $b; # copy if there's nothing to diff against
-    confess "a $a does not exist" if !-e $a; # this shouldn't happen!!
+    
+    my $md_a = Digest::MD5->new;
+    my $md_b = Digest::MD5->new;
+    
+    open my $afh, "<", $a or die "could not open $a: $!";
+    open my $bfh, "<", $b or die "could not open $b: $!";
+    
+    $md_a->addfile($afh);
+    $md_b->addfile($bfh);
 
-    my $ma = (stat $a)[9];
-    my $mb = (stat $b)[9];
-    return ($ma > $mb) ? 1 : 0;
+    return ($md_a->hexdigest ne $md_b->hexdigest) ? "1" : "0";
+    
+    #confess "a $a does not exist" if !-e $a; # this shouldn't happen!!
+    #
+    #my $ma = (stat $a)[9];
+    #my $mb = (stat $b)[9];
+    #return ($ma > $mb) ? 1 : 0;
 }
 
 1;

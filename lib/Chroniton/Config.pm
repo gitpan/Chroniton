@@ -6,7 +6,7 @@ package Chroniton::Config;
 use strict;
 use warnings;
 use File::HomeDir;
-use YAML qw(LoadFile DumpFile);
+use YAML::Syck qw(LoadFile DumpFile);
 use Time::HiRes qw(time);
 use Carp;
 
@@ -32,12 +32,13 @@ sub new {
     # XXX: this foobars my unit tests...
 
     my $dest = $self->{storage_directory};
-    die "configuration does not specify a backup destination" unless defined $dest;
+    die "configuration does not specify a backup destination"
+      unless defined $dest;
 
     mkdir $dest;
     die "Backup destination $dest does not exist"     if !-e $dest;
     die "Backup destination $dest is not a directory" if !-d $dest;
-    die "Backup destination $dest is not writable"    if !-w $dest;
+    warn "Backup destination $dest is not writable"   if !-w $dest;
 
     warn "nowhere to backup!" if !$self->{backup_locations};
     if($self->{backup_locations}->[0] eq "delete_this_entry"){
@@ -46,15 +47,20 @@ sub new {
     }
     
     foreach my $location (@{$self->{backup_locations}}){
-	die "Cannot backup location $location: not a directory" 
+	warn "Cannot backup location $location: not a directory" 
 	  if !-d $location;
-	die "Cannot backup location $location: not readable" 
+	warn "Cannot backup location $location: not readable" 
 	  if !-r $location;
 	
+    }
+
+    if(!$self->{exclude} || $self->{exclude} !~ "ARRAY"){
+	$self->{exclude} = [];
     }
     
     $self->{time} = time;
     bless $self, $class;
+
 }
 
 sub destination {
@@ -73,12 +79,19 @@ sub archive_after {
     return $_[0]->{archive_after};
 }
 
+sub exclude {
+    my $self    = shift;
+    my @exclude = @{$self->{exclude}};
+    return map {qr/$_/} @exclude;
+}
+
 sub _blank_config {
     return {
-	    storage_directory => "/tmp",
-	    backup_locations  => [("delete_this_entry", File::HomeDir->my_home,
+	    storage_directory  => "/tmp",
+	    backup_locations   => [("delete_this_entry", File::HomeDir->my_home,
 				   "/etc")],
-	    archive_after => "7",
+	    archive_after      => "7",
+	    exclude	       => ["/Library/Caches/"],
 	   };
 }
 
@@ -128,6 +141,11 @@ Returns the path to the config file.
 =head2 archive_after
 
 Returns the number of days between archiving operations.
+
+=head2 exclude
+
+Returns a list of compiled regular expressions.  If a path matches one
+of these, don't back it up.
 
 =head2 Chroniton::Config->_create
 

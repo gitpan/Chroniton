@@ -12,7 +12,7 @@ sub _blank_config {
 1;
 
 package main;
-use Test::More tests=>14;
+use Test::More tests=>13;
 use Chroniton::Messages;
 use Chroniton::Config;
 use Chroniton::State;
@@ -21,16 +21,27 @@ eval {
     Chroniton::Config->new;
 }; # will fail the first time :(
 
-my $config = Chroniton::Config->new;
-my $log    = Chroniton::Messages->new;
+my $config;
+my $log = Chroniton::Messages->new;
+    
 
+eval {
+    $config = Chroniton::Config->new;
+};
 # this might die if your real configuration is messed up
-ok($config, "create real config"); #1
-ok($config->config_file, "config is stored somewhere"); #2
-ok(scalar $config->locations, "some backup locations"); #3
-ok($config->destination, "somewhere to backup to"); #4
-ok($config->archive_after =~ /^[0-9]+$/, "archive_after is a number");#5
-undef $config;
+SKIP:
+{
+    skip("your real configuration is messed up. ".
+	 "FIX IT FIX IT FIX IT FIX IT!", 5)
+      if(!$config);
+    
+    ok($config, "create real config"); #1
+    ok($config->config_file, "config is stored somewhere"); #2
+    ok(scalar $config->locations, "some backup locations"); #3
+    ok($config->destination, "somewhere to backup to"); #4
+    ok($config->archive_after =~ /^[0-9]+$/, "archive_after is a number");#5
+    undef $config;
+}
 
 ok(ref Chroniton::Config::_blank_config, "blank config returns something"); #6
 is(Chroniton::Config::Test::config_file, "/tmp/config.$$.yml", "fake config works"); #7
@@ -71,13 +82,6 @@ is($state->{foo_bar}, undef, "corrupted state file rebuilt"); #13
 
 unlink "/tmp/test.$$/state.yml";
 rmdir "/tmp/test.$$";
-
-$state = Chroniton::State->new($config, $log);
-eval {
-    $state->save;
-};
-ok($@, "state shouldn't save if there's nowhere to put it"); #14
-# done.
 
 END {
     # cleanup

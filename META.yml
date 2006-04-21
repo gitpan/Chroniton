@@ -1,21 +1,24 @@
 abstract: Chroniton workstation backup system
-author: 'Jonathan Rockway <jrockway@cpan.org>'
-build_requires:
-  Archive::Extract: 0
+author: Jonathan Rockway <jrockway@cpan.org>
+build_requires: 
   File::Slurp: 0
+  File::Temp: 0
   Test::MockObject: 0
   Test::More: 0
+  Test::Pod: 0
   Test::Pod::Coverage: 0
   Test::Strict: 0
 distribution_type: module
 generated_by: Module::Install version 0.610
 license: gpl
 name: Chroniton
-no_index:
-  directory:
+no_index: 
+  directory: 
     - inc
     - t
-requires:
+requires: 
+  Archive::Extract: 0
+  Archive::Tar: 0
   Carp: 0
   DateTime: 0
   Exporter: 0
@@ -24,11 +27,12 @@ requires:
   File::Spec::Functions: 0
   File::Stat::ModeString: 0
   Getopt::Euclid: 0
+  IO::Zlib: 0
   Lingua::EN::Inflect: 0
   Number::Bytes::Human: 0
   Time::Duration: 0
   Time::HiRes: 0
-  YAML: 0
+  YAML::Syck: 0
   base: 0
   constant: 0
-version: 0.01_2
+version: 0.02

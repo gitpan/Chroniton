@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-use Test::More tests=>8;
+use Test::More tests=>10;
 
 BEGIN {
     use_ok( 'Chroniton' );
@@ -31,5 +31,13 @@ BEGIN {
 }
 
 BEGIN {
-    use_ok( 'Chroniton::Event::FileInSet' );
+    use_ok( "Chroniton::File" );
+}
+
+BEGIN {
+    use_ok("Chroniton::BackupContents");
+}
+
+BEGIN {
+    use_ok("Chroniton::Archive");
 }

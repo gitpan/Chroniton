@@ -6,7 +6,6 @@ use Test::More tests=>28;
 use Chroniton::Messages;
 use Chroniton::Message;
 use Chroniton::Event;
-use YAML;
 
 my $log = new Chroniton::Messages();
 

@@ -6,11 +6,12 @@ package Chroniton::Messages;
 use strict;
 use warnings;
 use Chroniton::Message;
-use YAML qw(DumpFile Dump);
+use YAML::Syck qw(DumpFile Dump);
 use Lingua::EN::Inflect qw(NO);
 use Number::Bytes::Human qw(format_bytes);
 use File::HomeDir;
 use Carp;
+use DateTime;
 
 =head1 NAME
 
@@ -47,7 +48,7 @@ sub new {
 		 warning => [],
 		 message => [],
 		 event => [],
-		 files => [], # files has an s... "file" didn't make sense
+#		 files => [], # files has an s... "file" didn't make sense
 		 internal => { 
 			      print => $print,
 			      count => 0,
@@ -172,15 +173,14 @@ sub summary {
     my $errors = $self->retrieve("error");
     my $warnings = $self->retrieve("warning");
     my @events = $self->retrieve("event");
-    my $file  = $self->retrieve("files");
     my ($dir, $copy, $link, $delete, $unknown) = (0, 0, 0, 0, 0);
     my ($bytes, $ctime) = (0, 1e-30);
     foreach my $event (@events){
 	my $id = $event->{event_id};
 	if($id == 10){
 	    $copy++;
-	    $bytes += $event->{bytes};
-	    $ctime += $event->{elapsed_time};
+	    $bytes += $event->{bytes}        || 0;
+	    $ctime += $event->{elapsed_time} || 0;
 	}
 
 	$link++    if $id == 11;
@@ -195,7 +195,6 @@ sub summary {
     $result .=   NO("  link", $link). " created.\n";
     $result .=   NO("  stale file", $delete). " deleted.\n";
     $result .=   NO("  unknown event", $unknown). ".\n";
-    $result .=   NO("  file", $file). " in backup set.\n";
 
     if($copy > 0){
 	my $rate = format_bytes($bytes/$ctime, si => 1);
@@ -206,7 +205,7 @@ sub summary {
     return $result;
 }
 
-=head2 fatal(message, filename)
+=head2 fatal(message, filename, silent)
 
 Logs an error, saves the logfile, and then dies (via C<confess>),
 printing the error message to STDERR and all log entries to STDOUT.
@@ -217,12 +216,17 @@ sub fatal {
     my $log      = shift;
     my $message  = shift;
     my $filename = shift;
+    my $silent   = shift;
     $log->error($filename, $message);
 
+    my $loc;
     if($0 !~ m{^t/.+[.]t$}){ # skip this when run from a unit test
-	my $loc;
 	eval {
 	    $loc = File::HomeDir->my_home();
+	    if(-e "$loc/Library/Logs"){
+		$loc = "$loc/Library/Logs/chroniton";
+		mkdir $loc;
+	    }
 	};
 	if(!defined $loc || !-d $loc){
 	    $log->warning($loc, "cannot write to homedir!");
@@ -230,8 +234,9 @@ sub fatal {
 	}
 	
 	$log->message($loc, "dumping log file to $loc");
-	
-	$loc .= "/BACKUP_ERRORS<". time(). ">.log.yml";
+	my $date = DateTime->now();
+	$date =~ s/\s//g;
+	$loc .= "/error.$date.log.yml";
 	eval {
 	    DumpFile($loc, $log);
 	};
@@ -240,11 +245,12 @@ sub fatal {
 	}
     }
     
-    if(!$log->{internal}->{print}){
+    unless($log->{internal}->{print} || $silent){
 	map {print $_->string. "\n"} $log->retrieve_all;
     }
-
-    confess "$0: fatal error: $message\n *** Stop.";
+    
+    print {*STDERR} "* error log dumped to $loc\n" if $loc;
+    confess "fatal error: $message\n *** Stop.";
 }
 
 sub _sort {

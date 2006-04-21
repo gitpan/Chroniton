@@ -5,6 +5,7 @@
 package Chroniton;
 use strict;
 use warnings;
+use Chroniton::Archive;
 use Chroniton::Config;
 use Chroniton::State;
 use Chroniton::Messages;
@@ -12,10 +13,12 @@ use Chroniton::Message;
 use Chroniton::Event;
 use Chroniton::Backup;
 use Chroniton::Restore;
-use YAML qw(DumpFile);
+use YAML::Syck qw(DumpFile);
 use Lingua::EN::Inflect qw(NO);
+use Time::HiRes qw(time);
+use Time::Duration qw(ago);
 
-our $VERSION = '0.01_2';
+our $VERSION = '0.02';
 1;
 
 =head1 Chroniton
@@ -23,6 +26,8 @@ our $VERSION = '0.01_2';
 =head1 NAME
 
 Chroniton.pm - simple backup system with archiving and incremental backups
+
+=head1 ABSTRACT
 
 This module is the interface to the exciting functionality provided by
 the other C<Chroniton::> modules.  The interface is action oriented,
@@ -38,34 +43,10 @@ modules.  If you're an end user, see L<chroniton.pl>.
 
 =head1 TODO and NOTES
 
-This is a development version because it's not yet feature complete.
-Mainly, archiving and an exclude list are not yet implemented.  It's
-also not as fast as possible, and the logging could be more efficient.
-However, the API is pretty stable, and everything that is implemented
-works according to the documentation.  I feel safe backing up my
-workstation with it.
-
-It's also pretty well tested: (88% is a B+ C<:)>.)
-
-     ------------------ ------ ------ ------ ------ ------ ------ ------
-     File                 stmt   bran   cond    sub    pod   time  total
-     ------------------ ------ ------ ------ ------ ------ ------ ------
-     Chroniton.pm         90.2   46.4   68.8  100.0  100.0    9.3   84.8
-     Backup.pm            91.3   70.4   58.3  100.0  100.0   31.9   84.8
-     Config.pm            94.7   60.0   66.7  100.0  100.0    4.2   87.8
-     Event.pm            100.0    n/a    n/a  100.0  100.0    1.9  100.0
-     FileInSet.pm        100.0  100.0    n/a  100.0  100.0    7.3  100.0
-     Message.pm          100.0  100.0  100.0  100.0  100.0   16.1  100.0
-     Messages.pm          89.2   83.3   66.7  100.0  100.0   18.0   88.5
-     Restore.pm           91.9   68.0   67.9  100.0  100.0    7.7   83.9
-     State.pm            100.0  100.0  100.0  100.0  100.0    3.7  100.0
-     Total                92.9   70.9   71.1  100.0  100.0  100.0   88.5
-     ------------------ ------ ------ ------ ------ ------ ------ ------
-
 Note that the test suite plays around with your filesystem a bit.  It
 adds a config file (that you'll want later anyway), and touches /tmp.
-I'll fix this in the production version -- some other Test::* modules
-need to be written first.
+I'll fix this Real Soon -- some other Test::* modules need to be
+written first.
 
 As always, bug reports, feature request, rants about why this package
 is unnecessary, etc., are welcomed.  I'd especially like to hear from
@@ -75,7 +56,7 @@ understand the semantics of the Windows filesystem.
 I'd also like to know if the individual component modules would be
 useful to anyone if they were available separately.  Logging has been
 done to death, but I think there are some useful features in my
-L<Chroniton::Messags> module.  Let me know what you think.
+L<Chroniton::Messages> module.  Let me know what you think.
 
 =head1 CONSTRUCTOR
 
@@ -158,45 +139,53 @@ sub backup {
     my $archive_after	  = $config->archive_after;
     my $state		  = $self->_get_state;
     my $log               = $self->_get_log;
-    my $last_full_backup  = $state->{last_full_backup} || 0;
-    my $last_backup	  = $state->{last_backup} || 0;
-    my $where;
+    my $last_full_backup  = eval {$state->last_full_backup->{date}} || 0;
+    my $last_backup	  = eval {$state->last_backup->{location}}  || undef;
+    my $last_backup_time  = eval {$state->last_backup->{date}}      || 0;
+    my $contents;
+
+    my $f_ago = ago(time() - $last_full_backup);
+    $f_ago = "never" if !$last_full_backup;
     
-    if(!$last_full_backup || !$last_backup){
+    my $ago = ago(time() - $last_backup_time);
+    $ago = "never" if !$last_backup_time;
+
+    $self->_msg("Last backup was $ago.");    
+    $self->_msg("Last full backup was $f_ago.");
+
+    if(!$last_full_backup || !-e $last_backup){
 	$self->_msg("No backup to increment against.  Forcing full backup.");
 
 	##
-	$where = $self->force_backup;
+	$contents = $self->force_backup;
     }
     else {
 	my $days_since_last_full_backup = (time() - $last_full_backup)/86_400;
 	
 	if($days_since_last_full_backup > $archive_after){
-	    $self->_msg("Last full backup was at $last_full_backup.  ".
-			"Forcing archive and full backup.");
+	    $self->_msg("Forcing archive and full backup.");
 	    eval {
 
 		##
-		$where = $self->force_archive;
+		$contents = $self->force_archive;
 	    };
 	    if($@){
 		$log->error(undef, "archive failed");
 	    }
 	    
 	    ##
-	    $where = $self->force_backup;
+	    $config->{time} = time();
+	    $contents = $self->force_backup;
 	}
 	else {
-	    my $against = $state->{last_backup_directory};
-	    $self->_msg("Last full backup was at $last_full_backup. Starting incremental ".
-			"against $against.");
-
+	    my $against = $last_backup;
+	    
 	    ##
-	    $where = $self->force_incremental($against);
+	    $contents = $self->force_incremental($against);
 	}
     }
     
-    return $where;
+    return $contents;
 }
 
 sub force_backup {
@@ -206,21 +195,20 @@ sub force_backup {
     my $config = $self->_get_config;
     my @backup_locations = $config->locations;
     my $backup_storage   = $config->destination;
-
+    
     $self->_msg("Starting full backup.");
 
-    my $where = Chroniton::Backup::backup($config, $log,
-					  [@backup_locations], $backup_storage);
+    my $contents = Chroniton::Backup::backup($config, $log,
+					     [@backup_locations], $backup_storage);
+
+    my $where   = $contents->{location};
+    $self->_write_contents($contents, $where);
     
-    $state->{last_type}			  = "full";
-    $state->{last_backup}		  = $config->{time};
-    $state->{last_backup_directory}	  = $where;
-    $state->{last_full_backup}		  = $config->{time};
-    $state->{last_full_backup_directory}  = $where;
-    
-    $self->_write_contents($where);    
-    $self->_finish_up;
-    return $where;
+    my $then    = $self->_get_config->{time};
+    my $logfile = $self->_finish_up;
+    $state->add_backup($where, 1, undef, $then, $logfile);
+    $state->save;
+    return $contents;
 }
 
 sub force_incremental {
@@ -230,7 +218,7 @@ sub force_incremental {
     my $config		  = $self->_get_config;
     my @backup_locations  = $config->locations;
     my $backup_storage	  = $config->destination;
-    my $against		  = shift || $state->{last_backup_directory};
+    my $against		  = shift || eval{$state->last_backup->{location}};
 
     if(!$against){
 	$self->_msg("No directory found to increment against!");
@@ -243,20 +231,49 @@ sub force_incremental {
     }
 
     $self->_msg("Starting incremental backup against $against.");
-    my $where = Chroniton::Backup::backup($config, $log,
-					  [@backup_locations], $backup_storage, $against);
+    my $contents = Chroniton::Backup::backup($config, $log,
+					     [@backup_locations],
+					     $backup_storage,
+					     $against);
     
-    $state->{last_type}			  = "incremental";
-    $state->{last_backup}		  = $config->{time};
-    $state->{last_backup_directory}	  = $where;
+    my $where = $contents->{location};
+    $self->_write_contents($contents, $where);    
     
-    $self->_write_contents($where);    
-    $self->_finish_up;
-    return $where;
+    my $then  = $self->_get_config->{time};
+    my $dest  = $self->_get_config->destination;
+    my $logfile = $self->_finish_up;
+    $state->add_backup($where, 0, undef, $then, $logfile);
+    $state->save;
+    return $contents;
 }
 
 sub force_archive {
-    die "Not yet implemented.";
+    my $self   = shift;
+    my $log    = $self->_get_log;
+    my $config = $self->_get_config;
+    my $state  = $self->_get_state;
+    my $directory = $config->destination;
+
+    $self->_msg("Starting archive of $directory");
+    my $where = Chroniton::Archive::archive($config, $log);
+    if(defined $where){
+	$self->_msg("Archive completed.");
+	$state->clear_backups;
+    }
+    my $then     = $self->_get_config->{time};
+    my $dest     = $self->_get_config->destination;
+    my $logfile  = $self->_finish_up;
+    my $contents = (-e "$where/contents.yml") ? "$where/contents.yml" : "";
+    $state->add_archive($where,  $contents, $then, $logfile);
+
+    if(!defined $where){
+	$self->_msg("Something bad happened. See the log ".
+		    "$logfile for details.");
+    }
+    $state->save;
+    $self->{restore} = undef; # clear the contents cache in the
+			      # restore object, if it exists
+    return $where;
 }
 
 sub restorable {
@@ -264,33 +281,44 @@ sub restorable {
     my $filename  = shift;
     my $config    = $self->_get_config;
     my $log       = $self->_get_log;
-    my $from      = $config->destination;
+    my $state     = $self->_get_state;
     
+    $self->{restore} ||= Chroniton::Restore->new($config, $state, $log);
+
     $self->_msg("Searching backups for $filename.  This may take a while.");
-    return Chroniton::Restore::restorable($log, $filename, $from);
+    return $self->{restore}->restorable($filename);
 }
 
 sub restore {
-    my $self = shift;
-    my $filename = shift;
-    my $from = shift;
-    my $force = shift;
-    my $log = $self->_get_log;
+    my $self	   = shift;
+    my $file       = shift;
+    my $force	   = shift;
+    my $config     = $self->_get_config;
+    my $state	   = $self->_get_state;
+    my $log	   = $self->_get_log;
     
+    $self->{restore} ||= Chroniton::Restore->new($config, $state, $log);
+    
+    my $filename = $file->{name};
+    my $from     = $file->{location};
     $self->_msg("Restoring $filename from $from");
-    my $files = Chroniton::Restore::restore($log, $filename, $from, $force);
+    my $files = $self->{restore}->restore($file, $force);
     $self->_msg( NO("file", $files). " restored");
-    $self->_finish_up;
-    
+
+    my $logfile = $self->_finish_up;
+    $state->add_restore($filename, $from, $config->{time}, $logfile);
+    $state->save;
+
     return $files;
 }
 
 sub summary {
-    return ($_[0])->_get_log->summary;
+    return $_[0]->_get_log->summary;
 }
 
 sub _finish_up {
     my $self  = shift;
+    my $config= $self->_get_config;
     my $log   = $self->_get_log;
     my $state = $self->_get_state;
     my $then  = $self->_get_config->{time};
@@ -299,36 +327,31 @@ sub _finish_up {
     $self->_msg("Writing state information back to disk. ",
 		"This may take a while.");
     
+    my $logfile;
     if($log->retrieve("error") == 0 && $log->retrieve("warning") == 0){
-	$state->{last_log} = "";
+	# no need to save the log... nothing bad happened
+	$state->set_last_log(undef);
 	$self->_msg("Not writing log to disk - no errors or warnings.");
     }
     else {
 	# save log
-	$state->{last_log} = "$dest/log_$then.yml";
-	DumpFile("$dest/log_$then.yml", $log);
+	$logfile = "$dest/log_$then.yml";
+	$state->set_last_log($logfile);
+	DumpFile($logfile, $log);
     }
 
-    # save state
-    $state->save;
+    return $logfile;
 }
 
 sub _write_contents {
-    my $self  = shift;
-    my $where = shift;
-    my $log   = $self->_get_log;
-
-    my @files = $log->retrieve("files");
-    my %files;
+    my $self	   = shift;
+    my $contents   = shift;
+    my $where	   = shift;
+    my $log	   = $self->_get_log;
     
-    # hashify @files for quick lookups later
-    foreach my $file (@files){
-	$files{$file->{original}} = $file;
-    }
-
     $log->debug("$where/contents.yml", "Writing file list to disk");
     eval {
-	DumpFile("$where/contents.yml", \%files);
+	DumpFile("$where/contents.yml", $contents);
     };
     $log->error("$where/contents.yml", "problem saving file list") if $@;
 }
@@ -343,7 +366,7 @@ sub _msg {
 =head2 backup
 
 Performs a backup in accordance with the config file -- full if a full
-backup is required, incremental otherwise.  If the config dictates
+backup is required, incremental otherwise.  If the configuration dictates
 that an archive should performed, it will be.
 
 =head2 force_incremental([against])
@@ -366,11 +389,11 @@ Returns a list of all restorable versions of C<filename>.  The list is
 a list of array references, which is formatted according to
 L<Chroniton::Restore/FUNCTIONS/restorable>.
 
-=head2 restore(path, [from])
+=head2 restore(file, [force])
 
-Restores C<path> to its original location on the filesystem.  If the
-file already exisits, this method will C<die>.  If you want to restore
-a file that exists, do it with L<cp|cp(1)>.
+Restores C<file> (a C<Chroniton::File> object as returned by
+C<restorable>) to its original location, overwriting it if C<force> is
+true.
 
 =head2 summary
 
@@ -396,21 +419,20 @@ developer's release.
 =head1 MORE DOCUMENTATION
 
 See L<chroniton.pl> if you're an end user, or L<Chroniton::Backup>,
-L<Chroniton::Restore>, or L<Chroniton::Archive> if you're a
-developer.
-
-If you're still confused, mail the author (but don't expect a reply if
-the question is answered in This Fine Manual.)
+L<Chroniton::Restore>, or L<Chroniton::Archive> if you're a developer.
+L<Chroniton::State>, L<Chroniton::Config>,
+L<Chroniton::BackupContents>, L<Chroniton::Messages>,
+L<Chroniton::Message>, and L<Chroniton::Event> are also available for
+your perusal.
 
 =head1 CONTRIBUTING
 
-Please send me bug reports (via RT), test cases, comments on whether
-or not you like the software, and patches!  I always have time to
-reply to intelligent commentary.
+Please send me bug reports (via the CPAN RT), test cases, comments on whether
+or not you like the software C<:)>, and patches.  
 
 =head1 AUTHOR
 
-Jonathan Rockway C<jrockway at cpan.org>.
+Jonathan Rockway C<< <jrockway at cpan.org> >>.
 
 =head1 COPYRIGHT
 
