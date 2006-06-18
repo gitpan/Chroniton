@@ -9,7 +9,7 @@ use warnings;
 use Archive::Tar;
 use Chroniton::Event;
 use Chroniton::Messages;
-use DateTime;
+use Time::HiRes qw(time);
 use YAML::Syck qw(LoadFile DumpFile);
 require IO::Zlib; # to make sure we can gzip this
 
@@ -67,13 +67,12 @@ sub archive {
 	}
     }
 
-    my $date = DateTime->now();
-    
     if(!@logs && !@backups){
 	$log->message($directory, "no logs or backups to archive!");
 	return 0;
     }
-    
+
+    my $date = $config->{time};
     # make the archive directory
     my $archive_dir = "$directory/archive_$date";
     mkdir $archive_dir;    
@@ -155,7 +154,7 @@ sub archive {
     }
     
     # archive the backup data
-    # we need a real tar here.
+    # we need a real tar here; archive::tar is S L O W sloooooow.
     $log->debug("", "creating tape archive of @backups");
     my @tar_command = ("tar", "czf", "$archive_dir/data.tar.gz", @backups);
     $status = system(@tar_command);

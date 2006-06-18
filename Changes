@@ -1,8 +1,21 @@
+0.03	17 June 2006
+	- remove colons from filenames to prevent tar from getting confused
+	- chroniton.pl prints error messages after the backup, even if
+	  --quiet is specified (for cron jobs)
+	- extended filesystem attributes are supported if File::ExtAttr
+	  is installed
+	- now stores config in a hidden directory on UNIX-like OSes
+	- files created by chroniton use the same time for their name
+	  throughout (i.e. backup_123456 and log_123456 instead of 
+	  backup_Jan_02_1970_08:30AM and log_123456.133742)
+
 0.02    21 April 2006
-	Feature complete, manual makes sense.
+	- feature complete (!)
+	- manual makes sense
 
 0.01_2
-	Restoring now works, test suite works the first time run, etc.
+	- restoring implemented
+	- test suite works the first time run
 	
 0.01_1
-	Initial release
+	- Initial release

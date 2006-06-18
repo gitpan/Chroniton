@@ -9,7 +9,7 @@ build_requires:
   Test::Pod::Coverage: 0
   Test::Strict: 0
 distribution_type: module
-generated_by: Module::Install version 0.610
+generated_by: Module::Install version 0.630
 license: gpl
 name: Chroniton
 no_index: 
@@ -20,7 +20,6 @@ requires:
   Archive::Extract: 0
   Archive::Tar: 0
   Carp: 0
-  DateTime: 0
   Exporter: 0
   File::Copy: 0
   File::HomeDir: 0
@@ -30,9 +29,10 @@ requires:
   IO::Zlib: 0
   Lingua::EN::Inflect: 0
   Number::Bytes::Human: 0
+  Text::Wrap: 0
   Time::Duration: 0
   Time::HiRes: 0
   YAML::Syck: 0
   base: 0
   constant: 0
-version: 0.02
+version: 0.03

@@ -6,9 +6,10 @@ package Module::Install::External;
 use strict;
 use Module::Install::Base;
 
-use vars qw{$VERSION @ISA};
+use vars qw{$VERSION $ISCORE @ISA};
 BEGIN {
-	$VERSION = '0.61';
+	$VERSION = '0.63';
+	$ISCORE  = 1;
 	@ISA     = qw{Module::Install::Base};
 }
 
@@ -62,4 +63,4 @@ sub requires_external_bin {
 
 __END__
 
-#line 137
+#line 138

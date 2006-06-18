@@ -18,7 +18,7 @@ use Lingua::EN::Inflect qw(NO);
 use Time::HiRes qw(time);
 use Time::Duration qw(ago);
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 1;
 
 =head1 Chroniton
@@ -79,6 +79,10 @@ The C<Chroniton::Config> object to glean configuration information from.
 
 Set to true if it's OK to print informative messages to STDOUT and STDERR.
 
+=item print_errors
+
+Set to true if it's OK to print errors to STDERR, even when C<interactive> is false.
+
 =item verbose
 
 Set to true if you'd like those messages to be verbose.
@@ -101,9 +105,15 @@ sub new {
 	
 	# create logger
 	if(!$self->{log}){
-	    $self->{log} = Chroniton::Messages->new(\*STDERR) if $self->{verbose};
-	    $self->{log} = Chroniton::Messages->new           if !$self->{verbose};
-	    
+	    if($self->{verbose}){
+		$self->{log} = Chroniton::Messages->new(\*STDERR);
+	    }
+	    elsif($self->{print_errors}){
+		$self->{log} = Chroniton::Messages->new(\*STDERR, "errors");
+	    }
+	    else {
+		$self->{log} = Chroniton::Messages->new();
+	    }
 	}
 
 	# load state
@@ -118,7 +128,6 @@ sub new {
     }
 
     return bless $self, $class;
-    
 }
 
 sub _get_log {
@@ -153,36 +162,33 @@ sub backup {
     $self->_msg("Last backup was $ago.");    
     $self->_msg("Last full backup was $f_ago.");
 
+    my $days_since_last_full_backup = (time() - $last_full_backup)/86_400;
+
     if(!$last_full_backup || !-e $last_backup){
 	$self->_msg("No backup to increment against.  Forcing full backup.");
 
 	##
 	$contents = $self->force_backup;
     }
+    elsif ($days_since_last_full_backup > $archive_after){
+	$self->_msg("Forcing archive and full backup.");
+	eval {
+	    
+	    ##
+	    $contents = $self->force_archive;
+	};
+	if($@){
+	    $log->error(undef, "archive failed");
+	}
+	##
+	$config->{time} = time();
+	$contents = $self->force_backup;
+    }
     else {
-	my $days_since_last_full_backup = (time() - $last_full_backup)/86_400;
+	my $against = $last_backup;
 	
-	if($days_since_last_full_backup > $archive_after){
-	    $self->_msg("Forcing archive and full backup.");
-	    eval {
-
-		##
-		$contents = $self->force_archive;
-	    };
-	    if($@){
-		$log->error(undef, "archive failed");
-	    }
-	    
-	    ##
-	    $config->{time} = time();
-	    $contents = $self->force_backup;
-	}
-	else {
-	    my $against = $last_backup;
-	    
-	    ##
-	    $contents = $self->force_incremental($against);
-	}
+	##
+	$contents = $self->force_incremental($against);
     }
     
     return $contents;
@@ -300,7 +306,13 @@ sub restore {
     $self->{restore} ||= Chroniton::Restore->new($config, $state, $log);
     
     my $filename = $file->{name};
-    my $from     = $file->{location};
+    my $from;
+    if($file->{archive}) {
+	$from = $file->{archive} . " (archived in ". $file->{location}. ")";
+    }
+    else {
+	$from = $file->{location};
+    }
     $self->_msg("Restoring $filename from $from");
     my $files = $self->{restore}->restore($file, $force);
     $self->_msg( NO("file", $files). " restored");
@@ -316,6 +328,14 @@ sub summary {
     return $_[0]->_get_log->summary;
 }
 
+sub errors {
+    return $_[0]->_get_log->retrieve("error");
+}
+
+sub warnings {
+    return $_[0]->_get_log->retrieve("warning");
+}
+
 sub _finish_up {
     my $self  = shift;
     my $config= $self->_get_config;
@@ -328,7 +348,7 @@ sub _finish_up {
 		"This may take a while.");
     
     my $logfile;
-    if($log->retrieve("error") == 0 && $log->retrieve("warning") == 0){
+    if($self->errors == 0 && $self->warnings == 0){
 	# no need to save the log... nothing bad happened
 	$state->set_last_log(undef);
 	$self->_msg("Not writing log to disk - no errors or warnings.");
@@ -341,6 +361,12 @@ sub _finish_up {
     }
 
     return $logfile;
+}
+
+sub all_ok {
+    my $self = shift;
+    my $log  = $self->_get_log;
+    
 }
 
 sub _write_contents {
@@ -399,6 +425,16 @@ true.
 
 Returns a summary of the actions performed, suitable for presenting to
 the user when a backup or restore is complete.
+
+=head2 errors
+
+Returns a list of errors encountered during the backup.  Elements of
+the list are C<Chroniton::Message> objects.
+
+=head2 warnings
+
+Returns a list of warnings encountered durning the backup.  Elements of
+the list are C<Chroniton::Message> objects.
 
 =head1 DIAGNOSTICS
 

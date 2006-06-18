@@ -39,11 +39,12 @@ sub new {
 	open(my $FILE, "<", $original) or croak "cannot read $original: $!";
 	$dgst->addfile($FILE);
 	$md5 = $dgst->hexdigest;
+	close $FILE;
     }
     
     $self->{type} = "file";
     $self->{type} = "directory" if -d $original;
-    $self->{type} = "link" if -l $original;
+    $self->{type} = "link"      if -l $original;
 
     if(-l $original){
 	lstat $original or croak "could not stat $original: $!";
@@ -62,8 +63,22 @@ sub new {
 			 atime       => (stat _)[8],
 			 size        => (stat _)[7],
 			};
-    #TODO: extended filesystem attributes
     
+    my %attribute_map;
+    eval {
+	require File::ExtAttr;
+	
+	my @attributes = File::ExtAttr::listfattr($original);
+	
+	foreach my $attribute (@attributes){
+	    my $value = File::ExtAttr::getfattr($original, $attribute);
+	    $attribute_map{$attribute} = $value;
+	}
+    };
+    ## TODO: better error handling -- what if an attribute couldn't be read?
+    
+    $self->{metadata}->{attributes} = \%attribute_map;
+
     return bless $self, $class;
 }
 
@@ -96,12 +111,14 @@ sub apply_metadata {
     $log = Chroniton::Messages->new if(!$log);
     $log->debug($to, "restoring saved metadata onto $to");
     
+    # restore UNIX permissions
     my $permissions = $metadata_ref->{permissions} || "-rw-r--r--"; # use a sane default
     my $n_permissions = string_to_mode($permissions);
     $log->debug($to, "setting $permissions ($n_permissions) on $to");
     chmod($n_permissions, $to)
       or $log->warning($to, "couldn't set permissions $permissions on $to");
     
+    # restore uid and gid (from the original username)
     my $user  = $metadata_ref->{uid};
     my $uid   = getpwnam($user)  || -1;
     my $group = $metadata_ref->{gid};
@@ -111,6 +128,7 @@ sub apply_metadata {
       or $log->warning($to, "couldn't set ownership $uid:$gid ".
 		            "($user:$group) on $to");
 
+    # restore the mtime and atime (TODO: creation time?)
     my $mtime = $metadata_ref->{mtime} || undef; 
     my $atime = $metadata_ref->{atime} || undef;
     
@@ -118,6 +136,33 @@ sub apply_metadata {
       or $log->warning($to, "could not set access or modification".
 		            " times on $to: $!");
 
+    # restore the extended filesystem attributes, if possible
+    my %attributes = %{$metadata_ref->{attributes}};
+    
+    eval {
+	require File::ExtAttr;
+    };
+    if($@){
+	# couldn't load File::ExtAttr
+	if(%attributes){
+	    $log->warning($to, "can't restore extended filesystem attributes;".
+			       " please install File::ExtAttr");
+	}
+	
+	# if there weren't any attributes to restore, this isn't a problem
+    }
+    else {
+	# actually restore the attributes
+	foreach my $attribute (keys %attributes){
+	    my $status = File::ExtAttr::setfattr($to,
+						$attribute,
+						$attributes{$attribute});
+
+	    $log->warning($to, "couldn't restore attribute $attribute: $!")
+	      if(!$status);
+	}
+    }
+    
     # finally, check the md5sum
     my $orig_md5 = $metadata_ref->{md5};
     if($orig_md5){

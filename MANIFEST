@@ -31,6 +31,7 @@ META.yml
 README
 t/01-load.t
 t/05-backup_internal.t
+t/06-extended-attributes.t
 t/10-logging.t
 t/11-exclude-list.t
 t/11-full-backup.t

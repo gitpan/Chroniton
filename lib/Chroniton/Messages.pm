@@ -11,7 +11,7 @@ use Lingua::EN::Inflect qw(NO);
 use Number::Bytes::Human qw(format_bytes);
 use File::HomeDir;
 use Carp;
-use DateTime;
+use Text::Wrap;
 
 =head1 NAME
 
@@ -33,24 +33,38 @@ Chroniton::Messages - an event log for Chroniton
 
 =head1 METHODS
 
-=head2 new([print])
+=head2 new([print, level])
 
 Creates an instance.  Argument print is a reference to a filehandle to
-write each message to.  If none is specified, messages are stored
+write each message to.  If no filehandle is specified, messages are stored
 only.
+
+C<level> indicates what level of messages are printed:
+
+=over 4
+
+=item C<undef> means to print everything
+
+=item C<"errors"> means to only print errors
+
+=item C<"warnings"> means to print errors and warnings
+
+=back
 
 =cut
 
 sub new {
-    my $class = shift;
-    my $print = shift;
+    my $class  = shift;
+    my $handle = shift;
+    my $level  = shift;
     my $self = { error => [],
 		 warning => [],
 		 message => [],
 		 event => [],
 #		 files => [], # files has an s... "file" didn't make sense
 		 internal => { 
-			      print => $print,
+			      print => $handle,
+			      level => $level,
 			      count => 0,
 
 			      # # # helpful when debugging log dumps # # #
@@ -79,18 +93,51 @@ sub add {
     my $self = shift;
     my $mess = shift;
 
+    # make sure this type of message makes sense
     my $type = $mess->{type};
     confess "message ($mess) is invalid\n". Dump($mess) 
       if !$type || $type eq "internal";
     
+    # increment the internal message count, and set an ID for this message
     $self->{internal}->{count}++;
     $mess->set_id($self->{internal}->{count});
     
+    # print the message, if we have somewhere to print it to
     if($self->{internal}->{print}){
+	my $level = $self->{internal}->{level};
+	
+	# print it only if:
+	if( 
+	   # level is unset
+	   !$level ||
+	   # it's an error and the level is "errors"
+	   ($level eq "errors" && $type eq "error") ||
+	   # or it's an error or warning and the level is "warnings"
+	   ($level eq "warnings" && ($type eq "error" || $type eq "warning")))
+	  
+	  {
+	      my $message = $mess->string;
+	      
+	      # if we're running in a terminal emulator, neatly wrap the
+	      # message for enhanced readability.
 
-	print {$self->{internal}->{print}} $mess->string. "\n";
+	      # XXX: todo: check this.
+
+	      my $columns = $ENV{COLUMNS} || 80;
+	      if($columns){
+		  local $Text::Wrap::columns = $columns;
+		  my $EMPTY_STRING = q{};
+		  my $SINGLE_SPACE = q{ };
+		  $message = wrap($EMPTY_STRING,
+				  $SINGLE_SPACE, # indent each additional line
+				                 # for readability
+				  $message);
+	      }
+	      print {$self->{internal}->{print}} "$message\n";
+	  }
     }
     
+    # store.
     push @{$self->{$type}}, $mess;
 }
 
@@ -234,7 +281,7 @@ sub fatal {
 	}
 	
 	$log->message($loc, "dumping log file to $loc");
-	my $date = DateTime->now();
+	my $date = time();
 	$date =~ s/\s//g;
 	$loc .= "/error.$date.log.yml";
 	eval {

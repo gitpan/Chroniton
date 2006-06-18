@@ -12,7 +12,6 @@ use Exporter;
 use File::Copy qw(cp);
 use File::Spec::Functions qw(abs2rel catfile splitpath catfile);
 use Time::HiRes qw(time);
-use DateTime;
 use Digest::MD5;
 
 use Chroniton::Messages;
@@ -66,9 +65,7 @@ sub backup {
     $log->add(Chroniton::Event->mkdir($destination));
 
     # create the storage directory
-    my $date = DateTime->now;
-    $date =~ s/\s//g; # whitespace in filenames is unnecessary
-
+    my $date = $config->{time};
     my $storage_dir = "$destination/backup_$date";
     if(-e $storage_dir){
 	# if you have more than one backup in one second, the second backup
@@ -102,7 +99,8 @@ sub backup {
 	}
 	$contents->add($src);
 	# do it!
-	_clone_dir($config, $log, $contents, $src, $dest, $this_against, \&_compare_files);
+	_clone_dir($config, $log, $contents, $src, $dest, $this_against, 
+		   \&_compare_files);
     }
 
     $log->message($sources, "$mode backup of $sources completed");

@@ -23,6 +23,9 @@ my $VERSION = $Chroniton::VERSION;
 die "Can't be verbose and quiet simultaneously!" 
   if $ARGV{'-q'} && $ARGV{'-v'};
 
+## *** TODO, add option to remove archives or backups.
+## *** TODO, have errors printed even in quiet mode.
+
 if(exists $ARGV{'--config'}){
     # try to make a config file or edit one
     do_config();
@@ -42,8 +45,12 @@ if(exists $ARGV{'--list'}){
 }
 
 my $then = time();
-my $chroniton = Chroniton->new({verbose => $ARGV{'-v'},
-				interactive => !$ARGV{'-q'}});
+my $chroniton = Chroniton->new({verbose      => $ARGV{'-v'},
+				interactive  => !$ARGV{'-q'},
+				# we always want errors printed, 
+				# even in quiet mode
+				print_errors => 1,
+			       });
 die "couldn't initialize chroniton" if !$chroniton;
 
 # do the operation
@@ -73,6 +80,7 @@ else {
 }
 
 # print summary
+my @errors   = $chroniton->errors;
 if(!$ARGV{'-q'}){
     print {*STDERR} $chroniton->summary;
     
@@ -82,7 +90,8 @@ if(!$ARGV{'-q'}){
     print {*STDERR} "Duration: $dur seconds\n";
 }
 
-exit 0;
+exit (scalar @errors > 0 ? 1 : 0);
+
 
 # __ end of main __
 
@@ -293,7 +302,12 @@ sub do_config {
     # then exec the editor on it
     my $editor = $ENV{EDITOR};
     $editor = "emacs" if !$editor;
-    exec($editor, $config_file);
+    
+    # for people with $EDITOR = foo -bar -baz 
+    my @editor = split /\s/, $editor; 
+    exec(@editor, $config_file);
+    
+    die "Couldn't exec the editor, $editor.";
 }
 
 __END__
@@ -304,7 +318,7 @@ chroniton.pl - interface to the chroniton backup system
 
 =head1 VERSION
 
-This document refers to chroniton.pl version 0.02, C<$Revision: $>.
+This document refers to chroniton.pl version 0.02, C<$Revision: 95 $>.
 
 =head1 SYNOPSIS
 
@@ -315,11 +329,13 @@ will create a sample configuration file and open it in your C<$EDITOR>
 of choice.  After you modify this file, you can edit it again with the
 C<--configure> option; it won't erase your changes.
 
-For the format of the configuration file, see L</CONFIGURATION>.  An
-example of a configuration file:
+For the format of the configuration file, see L</CONFIGURATION>.  
+
+A configuration file looks something like this:
 
      ---
-     archive_after: 7
+     archive_after: 30
+     remove_after: 180
      backup_locations:
       - /Users/Shared
       - /Users/jon
@@ -329,18 +345,21 @@ example of a configuration file:
       - /tmp
       - /.cpan
 
-This will cause chroniton to backup everything in /Users/Shared and
-/Users/jon, except for filenames that match any of the excludes.  It
-will automatically archive your backups every 7 days (and then
-immediately do a fresh full backup).
+This configuration file will cause chroniton to backup everything in
+/Users/Shared and /Users/jon, except for filenames that match any of
+the excludes.  It will automatically archive your backups every 30
+days (and then immediately do a fresh full backup).  chroniton will
+also automatically clean up (read: delete) archive files that are
+older than 180 days (to conserve space on the backup device).
 
 Keep in mind that the file format is fairly strict.  Spaces, in
 particular, have meaning, and you'll get errors if the file isn't
-valid YAML.  See L<YAML> for more details about YAML.  C<ysh> is a
-small program included with YAML that lets you interactively play with
-YAML -- give it a try if you've never used YAML before.
+valid YAML.  See L<the YAML documentation|YAML> for more details about
+YAML.  C<ysh> is a small program included with YAML that lets you
+interactively play with YAML -- give it a try if you've never used
+YAML before.
 
-Also remember that the excludes are regular expressions, so C</.cpan>
+Also remember that the excludes are ``regular expressions'', so C</.cpan>
 matches /foo/bar/.cpan/5.8.6 and /home/jon/.cpanplus/BUILD (and many
 other things).  Please see L<perlre> for more information on regular
 expressions.
@@ -351,7 +370,8 @@ After you've configured chroniton to your satisfaction, run
 
      chroniton.pl
 
-to do an initial full backup.  If you're interested in exactly what it's doing, try 
+to do an initial full backup.  If you're interested in exactly what
+chroniton is doing, try
 
      chroniton.pl --verbose
 
@@ -364,16 +384,23 @@ logfile by typing
      chroniton.pl --log
 
 Sometimes something Really Bad happens and chroniton has to exit
-immediately -- in this case it saves the logfile to
+immediately.  In this case it saves the logfile to
 ~/Library/Logs/chroniton (if ~/Library/Logs exists, otherwise it just
-dumps the log in your home directory).  You can review an arbitrary logfile by running:
+dumps the log in your home directory).  
+
+The C<--log> option can do more than show you the most recent log --
+you can review an arbitrary logfile by supplying C<--log> with the
+filename of the logfile you'd like to inspect:
 
      chroniton.pl --log /path/to/the/log
 
 The logs are YAML dumps, so they should be understandable if you
 C<cat> them.  In fact, there's often more information in the raw dump
 than what C<chroniton.pl --log> prints, so if you're not sure exactly
-what's going wrong, take a look at the raw file.
+what's going wrong, take a look at the raw file.  If you're having
+problems with chroniton and want to submit a bug report, please
+include this raw YAML file, instead of the processed output of
+C<chroniton.pl --log>.
 
 Once you have an inital backup, subsequent invocations of
 C<chroniton.pl> will only save the changes between your filesystem and
@@ -410,17 +437,23 @@ That will print something that looks like:
      1: full backup to /tmp/backup/backup_2006-04-21T04:37:44
         1 minute and 14 seconds ago
         170 bytes in 1 object (1 directory and no links)
-      3 errors and no warnings encountered:
-     couldn't copy /Users/Shared/.DS_Store to /tmp/backup/backup_2006-04-21T04:37:44//Users/Shared/.DS_Store: No such file or directory
-     couldn't copy /Users/Shared/.localized to /tmp/backup/backup_2006-04-21T04:37:44//Users/Shared/.localized: No such file or directory
-     couldn't copy /Users/Shared/SC Info to /tmp/backup/backup_2006-04-21T04:37:44//Users/Shared/SC Info: No such file or directory
+        3 errors and no warnings encountered:
+        couldn't copy /Users/Shared/.DS_Store to 
+         /tmp/backup/backup_2006-04-21T04:37:44//Users/Shared/.DS_Store: 
+         No such file or directory
+        couldn't copy /Users/Shared/.localized to
+         /tmp/backup/backup_2006-04-21T04:37:44//Users/Shared/.localized:
+         No such file or directory
+        couldn't copy /Users/Shared/SC Info to
+         /tmp/backup/backup_2006-04-21T04:37:44//Users/Shared/SC Info:
+         No such file or directory
      ---
      0: incremental backup to /tmp/backup/backup_2006-04-21T04:38:53
         5 seconds ago
         6.9K in 5 objects (2 directories and no links)
 
-The most recent backup is on the bottom (0), the oldest is at the top
-(3).  Note that this command may take some time to run, since it's
+The most recent backup is on the bottom (0) and the oldest is at the
+top (3).  Note that this command may take some time to run, since it's
 loading the backup summaries into memory in order to compute the nice
 statistics.  If you have hundereds of backups, you might want to use
 this opportunity to obtain a caffeniated beverage.
@@ -428,9 +461,6 @@ this opportunity to obtain a caffeniated beverage.
 To get a list of the files in the most recent backup, run:
 
      chroniton.pl --list
-
-This is much faster than running C<find> in the backup directory (and
-equally effective).
 
 =head2 Scheduling automatic backups
 
@@ -445,7 +475,7 @@ understand the above syntax.)
 The C<--quiet> option tells
 chroniton to not print any (non-error) messages.  This will save you
 the trouble of receiving an e-mail every day informing you that
-chroniton ran last night.  If you I<do> get a message, you'll know
+chroniton ran last night.  If you I<do> get a message, you'll know that
 something bad happened -- check the log with C<chroniton.pl --log>.
 
 =head2 Archiving data
@@ -487,7 +517,7 @@ you want:
      revision> _
 
 Just type the number that corresponds to the revision you want, or
-Control-c to quit.
+Control-C to quit.
 
 To save yourself this step and automatically restore the latest version, run
 
@@ -514,28 +544,39 @@ Chroniton is configured via a config file (config.yml) stored in a
 determined by C<File::HomeDir>.  In UNIX, this is C<~/chroniton>, on
 Mac OS X, this is C<~/Library/Application Support/Chroniton>.
 
-Options are (as of version 0.02):
+Options are (as of version 0.03):
 
 =over
 
+=item archive_after
+
+Optional.  Specifies the lifetime (in days) of non-archival backups.
+After this number of days has passed, all (current) full and
+incremental backups will be compressed and stored as an archive.
+
 =item backup_locations
 
-A list of directories to backup.
-
-=item storage_directory
-
-Where your backups (and chroniton state information) should be stored.
-It must be a real directory, not a link to one.  It will be created if
-it doesn't exist.
+Required.  A list of directories to backup.
 
 =item exclude
 
-A list of regular expressions.  If a path is matched by one of these
+Optional.  A list of regular expressions.  If a path is matched by one of these
 regular expressions, it is not backed up.  If you're not familiar with
 Perl's regular expression syntax, please read L<perlre>.  If you'd
 like to see what matches and what doesn't, run chroniton in verbose
 mode -- a message is printed for every file that is skipped due to
 your exclude rules.
+
+=item remove_after
+
+Optional.  Specifies the lifetime (in days) of archives.  Archives
+older than this will be permanently removed.
+
+=item storage_directory
+
+Required.  Where your backups (and chroniton state information) should
+be stored.  It must be a real directory, not a link to one.  It will
+be created if it doesn't exist.
 
 =back
 

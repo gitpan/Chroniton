@@ -22,8 +22,11 @@ mkdir "/tmp/test.$$/src/dir";
 `touch /tmp/test.$$/src/dir/dirfoo`;
 `touch /tmp/test.$$/src/foo`;
 `touch /tmp/test.$$/src/bar`;
+mkdir "/tmp/test.$$/src/cycle";
+`touch /tmp/test.$$/src/cycle/file`;
+symlink "/tmp/test.$$/src/cycle", "/tmp/test.$$/src/cycle/oh_no";
 
-diag("working in /tmp/test.$$");
+#diag("working in /tmp/test.$$");
 
 $config->set_always("destination", "/tmp/test.$$/dest");
 $config->set_always("archive_after", "7");
@@ -168,7 +171,8 @@ eval {
     $count = $chroniton->restore($files[0], 1);
 };
 is($count, 1, "restore should succeed after archive");
-is((stat "/tmp/test.$$/src/foo")[2], string_to_mode("-r--r--r-x"), "permissions stuck");
+is((stat "/tmp/test.$$/src/foo")[2], string_to_mode("-r--r--r-x"), 
+   "permissions stuck");
 print $chroniton->summary;
 
 END {

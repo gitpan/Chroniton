@@ -15,6 +15,7 @@ my $config = Test::MockObject->new();
 $config->set_always("destination", "$dir/dest");
 $config->set_always("locations", "$dir/src"); # is this portable?
 $config->set_list("exclude", (qr{/ba}, qr{/nothing}));
+$config->{time} = time();
 
 my @files = qw(src/foo src/bar src/baz src/afoo/bar src/aba/abc src/aba/bar
 	       src/aba/abar src/.nothing src/nothing/foo src/nothing/bar

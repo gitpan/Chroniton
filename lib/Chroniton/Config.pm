@@ -72,7 +72,13 @@ sub locations {
 }
 
 sub config_file {
-    return  File::HomeDir->my_data. "/chroniton/config.yml";
+    if( $^O =~ /Darwin/ || $^O =~ /Win32/ ){
+	return  File::HomeDir->my_data. "/Chroniton/config.yml";
+    }
+    else {
+	# real UNIX users hide their config files.
+	return  File::HomeDir->my_data. "/.chroniton/config.yml";
+    }
 }
 
 sub archive_after {
@@ -91,7 +97,7 @@ sub _blank_config {
 	    backup_locations   => [("delete_this_entry", File::HomeDir->my_home,
 				   "/etc")],
 	    archive_after      => "7",
-	    exclude	       => ["/Library/Caches/"],
+	    exclude	       => ['/Caches', '/.cpan(?:plus)?'],
 	   };
 }
 
